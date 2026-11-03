@@ -1,0 +1,14 @@
+{
+  "GlobalStats": {"partitionsTotal": 1000, "partitionsAssigned": 1000, "bytesAssigned": 123456},
+  "Operations": [
+    [
+      {"id": 0, "operation": "Result", "expressions": ["O.ID", "C.NAME"]},
+      {"id": 1, "parentOperators": [0], "operation": "InnerJoin", "expressions": ["joinKey: (O.CUSTOMER_ID = C.ID)"]},
+      {"id": 2, "parentOperators": [1], "operation": "Filter", "expressions": ["TO_DATE(O.TS) = '2024-01-01'"]},
+      {"id": 3, "parentOperators": [2], "operation": "TableScan", "objects": ["DB.S.ORDERS"],
+       "expressions": ["ID", "CUSTOMER_ID", "TS"], "partitionsAssigned": 1000, "partitionsTotal": 1000, "bytesAssigned": 99999},
+      {"id": 4, "parentOperators": [1], "operation": "TableScan", "objects": ["DB.S.CUSTOMERS"],
+       "expressions": ["ID", "NAME"], "partitionsAssigned": 2, "partitionsTotal": 2}
+    ]
+  ]
+}

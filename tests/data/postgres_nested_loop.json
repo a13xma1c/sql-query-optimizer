@@ -1,0 +1,5 @@
+[{"Plan": {"Node Type": "Nested Loop", "Join Type": "Inner", "Total Cost": 2000000.0, "Plan Rows": 5000000,
+  "Plans": [
+   {"Node Type": "Seq Scan", "Relation Name": "a", "Alias": "a", "Total Cost": 1000.0, "Plan Rows": 5000},
+   {"Node Type": "Materialize", "Total Cost": 400.0, "Plan Rows": 5000, "Plans": [
+     {"Node Type": "Seq Scan", "Relation Name": "b", "Alias": "b", "Total Cost": 300.0, "Plan Rows": 5000}]}]}}]

@@ -1,0 +1,33 @@
+Fragment 0 [SINGLE]
+    Output layout: [orderkey, name]
+    Output partitioning: SINGLE []
+    Output[columnNames = [orderkey, name]]
+    │   Layout: [orderkey:bigint, name:varchar]
+    │   Estimates: {rows: 1500 (60kB), cpu: 0, memory: 0B, network: 0B}
+    └─ RemoteSource[sourceFragmentIds = [1]]
+           Layout: [orderkey:bigint, name:varchar]
+
+Fragment 1 [HASH]
+    Output layout: [orderkey, name]
+    Output partitioning: SINGLE []
+    InnerJoin[criteria = (custkey = custkey_0), hash = [$hashvalue, $hashvalue_1], distribution = PARTITIONED]
+    │   Layout: [orderkey:bigint, name:varchar]
+    │   Estimates: {rows: 1500 (60kB), cpu: 3.2M, memory: 4.5MB, network: 4.5MB}
+    │   Distribution: PARTITIONED
+    ├─ ScanFilterProject[table = hive:sales:orders, filterPredicate = (CAST(orderdate AS varchar) = '2024-01-01')]
+    │      Layout: [orderkey:bigint, custkey:bigint, $hashvalue:bigint]
+    │      Estimates: {rows: 15000000 (200MB), cpu: 200M, memory: 0B, network: 0B}/{rows: 1500 (20kB), cpu: 200M, memory: 0B, network: 0B}
+    │      orderkey := orderkey:bigint:REGULAR
+    │      dt := dt:varchar:PARTITION_KEY
+    └─ LocalExchange[partitioning = HASH, arguments = ["custkey_0"]]
+       │   Layout: [custkey_0:bigint, name:varchar]
+       │   Estimates: {rows: 150000 (4MB), cpu: 4M, memory: 0B, network: 0B}
+       └─ RemoteSource[sourceFragmentIds = [2]]
+              Layout: [custkey_0:bigint, name:varchar]
+
+Fragment 2 [SOURCE]
+    Output layout: [custkey_0, name]
+    Output partitioning: HASH [custkey_0]
+    TableScan[table = hive:sales:customer]
+        Layout: [custkey_0:bigint, name:varchar]
+        Estimates: {rows: 150000 (4MB), cpu: 4M, memory: 0B, network: 0B}

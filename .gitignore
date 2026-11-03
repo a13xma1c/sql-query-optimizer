@@ -1,0 +1,263 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Packaging / build artifacts
+build/
+dist/
+wheels/
+sdist/
+downloads/
+develop-eggs/
+eggs/
+.eggs/
+lib64/
+parts/
+var/
+share/python-wheels/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Freezers / installers (PyInstaller, Briefcase, py2app, Nuitka)
+*.spec
+.briefcase/
+*.app
+*.dmg
+*.pkg
+*.msi
+*.exe
+*.AppImage
+*.build/
+*.dist/
+*.onefile-build/
+
+# ---------------------------------------------------------------------------
+# Virtual environments & uv  (keep uv.lock and .python-version committed)
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+.uv-cache/
+
+# Other package managers (this project uses uv)
+Pipfile.lock
+poetry.lock
+pdm.lock
+.pdm-python
+.pdm-build/
+__pypackages__/
+
+# ---------------------------------------------------------------------------
+# Testing / coverage / typing / linting caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+nosetests.xml
+junit*.xml
+.cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.pyright/
+.ruff_cache/
+.benchmarks/
+cython_debug/
+*.prof
+*.lprof
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docs
+docs/_build/
+site/
+
+# ---------------------------------------------------------------------------
+# Qt / PySide6
+# ---------------------------------------------------------------------------
+*.qm
+*.autosave
+*.pro.user
+*.pro.user.*
+*.qbs.user
+*.moc
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qmlc
+*.jsc
+*_rc.py
+.qmlls.ini
+
+# ---------------------------------------------------------------------------
+# Graphviz generated output
+# ---------------------------------------------------------------------------
+*.gv
+*.dot
+*.gv.pdf
+*.gv.png
+*.gv.svg
+plan_output/
+exports/
+
+# ---------------------------------------------------------------------------
+# Local databases & data files (DuckDB, SQLite, dumps, columnar files)
+# ---------------------------------------------------------------------------
+*.duckdb
+*.duckdb.wal
+*.ddb
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.parquet
+*.orc
+*.avro
+*.arrow
+*.feather
+*.dump
+*.bak
+local_data/
+
+# ---------------------------------------------------------------------------
+# Secrets & credentials (DB connection details, cloud keys)
+# ---------------------------------------------------------------------------
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+secrets/
+credentials
+credentials.*
+connections.json
+connections.yaml
+connections.yml
+connections.toml
+.pgpass
+.pg_service.conf
+.snowsql/
+.snowflake/
+.trino/
+.aws/
+.azure/
+.gcloud/
+service-account*.json
+*-credentials.json
+
+# Application local settings / history
+.sqlanalyzer/
+sqlanalyzer.ini
+*.local.json
+*.local.toml
+*.local.yaml
+*.local.yml
+query_history.*
+
+# ---------------------------------------------------------------------------
+# Logs & temp files
+# ---------------------------------------------------------------------------
+*.log
+*.log.*
+logs/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+tmp/
+temp/
+
+# ---------------------------------------------------------------------------
+# IDEs & editors
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.code-workspace
+.history/
+*.sublime-project
+*.sublime-workspace
+Session.vim
+.netrwhist
+tags
+\#*\#
+.\#*
+auto-save-list/
+.dir-locals.el
+.spyderproject
+.spyproject
+.ropeproject
+
+# ---------------------------------------------------------------------------
+# AI assistant / tooling state
+# ---------------------------------------------------------------------------
+.bob/
+.claude/
+.cursor/
+.aider*
+.continue/
+.serena/
+
+# ---------------------------------------------------------------------------
+# Operating systems
+# ---------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.apdisk
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+.fuse_hidden*

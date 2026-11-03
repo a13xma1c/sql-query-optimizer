@@ -1,0 +1,43 @@
+[project]
+name = "sqlanalyzer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=2.0.0",
+    "duckdb-engine>=0.17.0",
+    "graphviz>=0.21",
+    "psycopg2-binary>=2.9.13",
+    "pyside6>=6.12.0",
+    "snowflake-sqlalchemy>=2.1.0",
+    "sqlalchemy>=2.1.6",
+    "sqlglot>=30.29.0",
+    "trino>=0.340.0",
+]
+
+[project.scripts]
+sqlanalyzer = "sqlanalyzer:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E741", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

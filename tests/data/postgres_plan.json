@@ -1,0 +1,30 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Hash Join", "Join Type": "Inner", "Total Cost": 90500.0, "Plan Rows": 1000,
+      "Actual Rows": 400000, "Actual Loops": 1, "Actual Total Time": 950.0,
+      "Hash Cond": "(o.customer_id = c.id)",
+      "Plans": [
+        {
+          "Node Type": "Seq Scan", "Parent Relationship": "Outer", "Schema": "public", "Relation Name": "orders",
+          "Alias": "o", "Total Cost": 80000.0, "Plan Rows": 1000000, "Actual Rows": 400000, "Actual Loops": 1,
+          "Actual Total Time": 600.0, "Filter": "(date(order_date) = '2024-01-15'::date)",
+          "Rows Removed by Filter": 4600000
+        },
+        {
+          "Node Type": "Hash", "Parent Relationship": "Inner", "Total Cost": 500.0, "Plan Rows": 10000,
+          "Actual Rows": 10000, "Actual Loops": 1, "Actual Total Time": 20.0, "Hash Batches": 4,
+          "Plans": [
+            {
+              "Node Type": "Seq Scan", "Parent Relationship": "Outer", "Schema": "public",
+              "Relation Name": "customers", "Alias": "c", "Total Cost": 400.0, "Plan Rows": 10000,
+              "Actual Rows": 10000, "Actual Loops": 1, "Actual Total Time": 10.0
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 0.4,
+    "Execution Time": 960.0
+  }
+]
