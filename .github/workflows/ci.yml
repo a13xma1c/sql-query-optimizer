@@ -1,0 +1,188 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.6"   # >= 0.13: older uv binaries cannot read the sdists uv_build 0.13 writes
+  QT_QPA_PLATFORM: offscreen
+  PYTHONUTF8: "1"
+
+jobs:
+  lockfile:
+    # Reported on its own so a stale uv.lock never masks the real test results: the other jobs
+    # run `uv sync` (which re-resolves) rather than `uv sync --locked`.
+    name: Lockfile is up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv lock --check
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run ruff check --output-format=github .
+
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --group dev
+      - run: uv run mypy
+
+  test:
+    name: Tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: macos-latest,  python: "3.12" }
+          - { os: windows-latest, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+
+      # Qt (offscreen still needs the EGL/xkb/xcb client libraries), Graphviz for the plan graphs and
+      # PostgreSQL's initdb/pg_ctl for the throw-away cluster the e2e tests start.
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends graphviz libegl1 libopengl0 libxkbcommon0 \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libdbus-1-3 libfontconfig1 libglib2.0-0
+          PG_BIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$PG_BIN" ]; then echo "$PG_BIN" >> "$GITHUB_PATH"; echo "PostgreSQL binaries: $PG_BIN"; fi
+      - name: System packages (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install graphviz
+          PG_BIN=$(ls -d /opt/homebrew/opt/postgresql@*/bin /usr/local/opt/postgresql@*/bin 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$PG_BIN" ]; then echo "$PG_BIN" >> "$GITHUB_PATH"; echo "PostgreSQL binaries: $PG_BIN"; fi
+      - name: System packages (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install graphviz --no-progress -y
+          $pg = Get-ChildItem "C:\Program Files\PostgreSQL\*\bin" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
+          if ($pg) { Add-Content $env:GITHUB_PATH $pg.FullName; Write-Host "PostgreSQL binaries: $($pg.FullName)" }
+
+      - run: uv sync --group dev
+      - name: Unit and component tests
+        run: uv run pytest -m "not e2e" -q --junitxml=reports/junit-unit.xml
+      - name: End-to-end tests
+        run: uv run pytest tests/e2e -q --junitxml=reports/junit-e2e.xml
+      - name: Packaged console scripts
+        run: |
+          uv run sqlanalyzer --version
+          uv run sqlanalyzer --self-check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports-${{ matrix.os }}-py${{ matrix.python }}
+          path: reports/
+          if-no-files-found: ignore
+
+  build:
+    name: Build wheel and sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [lint, typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv build
+      - name: Check the artifacts
+        run: |
+          ls -l dist/
+          uv run --no-project --with twine twine check dist/*
+          # install the wheel into a throw-away environment and exercise it without the repository on sys.path
+          uv venv --python 3.12 /tmp/wheel-env
+          uv pip install --python /tmp/wheel-env/bin/python dist/*.whl
+          cd /tmp
+          /tmp/wheel-env/bin/sqlanalyzer --version
+          /tmp/wheel-env/bin/python -c "from sqlanalyzer.samples import load_samples; n = len(load_samples()); assert n >= 30, n; print(n, 'bundled samples')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+  bundle:
+    name: Desktop bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    needs: [lint, typecheck]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: "3.12"
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libdbus-1-3 libfontconfig1 libglib2.0-0
+      - run: uv sync --group packaging
+      - run: uv run --group packaging pyinstaller packaging/sqlanalyzer.spec --noconfirm --log-level WARN
+      - name: Self-check the frozen bundle
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then BIN="dist/SQL Analyzer.app/Contents/MacOS/sqlanalyzer";
+          elif [ "$RUNNER_OS" = "Windows" ]; then BIN="dist/sqlanalyzer/sqlanalyzer.exe";
+          else BIN="dist/sqlanalyzer/sqlanalyzer"; fi
+          "$BIN" --version
+          "$BIN" --self-check
+      - name: Archive
+        shell: bash
+        run: |
+          mkdir -p bundle
+          if [ "$RUNNER_OS" = "macOS" ]; then (cd dist && zip -qr "../bundle/sqlanalyzer-macos.zip" "SQL Analyzer.app");
+          elif [ "$RUNNER_OS" = "Windows" ]; then (cd dist && 7z a -bd "../bundle/sqlanalyzer-windows.zip" sqlanalyzer > /dev/null);
+          else (cd dist && tar czf "../bundle/sqlanalyzer-linux.tar.gz" sqlanalyzer); fi
+          ls -l bundle/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.os }}
+          path: bundle/

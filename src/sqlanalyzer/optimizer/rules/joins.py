@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sqlglot import exp
 
-from ...sqlutil import scopes_of, select_scopes
+from ...sqlutil import scopes_of, select_of, select_scopes
 from ..engine import Rewrite, Rule, RuleContext, Safety
 from .common import column_tables, is_null_rejecting, set_where, where_conjuncts
 
@@ -13,7 +13,7 @@ def _source_aliases(select: exp.Select) -> list[str]:
     """Aliases/names of the FROM item and every join target, in order."""
     names: list[str] = []
     from_ = select.args.get("from_") or select.args.get("from")
-    if from_ is not None and isinstance(from_.this, exp.Expression):
+    if from_ is not None and isinstance(from_.this, exp.Expr):
         names.append(from_.this.alias_or_name)
     for j in select.args.get("joins") or []:
         names.append(j.this.alias_or_name)
@@ -31,13 +31,13 @@ class ExplicitJoinRule(Rule):
     safety = Safety.SAFE
     fixes = ("implicit-join", "cartesian-join")
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return any(_is_comma_join(j) for j in expression.find_all(exp.Join))
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for scope in select_scopes(expression):
-            sel: exp.Select = scope.expression
+            sel = select_of(scope)
             joins: list[exp.Join] = sel.args.get("joins") or []
             comma = [j for j in joins if _is_comma_join(j)]
             if not comma:
@@ -92,13 +92,13 @@ class LeftJoinToInnerRule(Rule):
     safety = Safety.SAFE
     fixes = ("left-join-filtered",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return any(j.side == "LEFT" for j in expression.find_all(exp.Join)) and expression.find(exp.Where) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for scope in select_scopes(expression):
-            sel: exp.Select = scope.expression
+            sel = select_of(scope)
             preds = where_conjuncts(sel)
             if not preds:
                 continue
@@ -128,11 +128,11 @@ class RedundantJoinConditionRule(Rule):
     category = "joins"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return any(j.args.get("on") is not None for j in expression.find_all(exp.Join)) \
             and expression.find(exp.Where) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for scope in scopes_of(expression):
             sel = scope.expression
@@ -159,7 +159,7 @@ class RedundantJoinConditionRule(Rule):
         return expression, out
 
 
-def _flatten_and(node: exp.Expression) -> list[exp.Expression]:
+def _flatten_and(node: exp.Expr) -> list[exp.Expr]:
     while isinstance(node, exp.Paren):
         node = node.this
     if isinstance(node, exp.And):
@@ -167,7 +167,7 @@ def _flatten_and(node: exp.Expression) -> list[exp.Expression]:
     return [node]
 
 
-def _canonical(pred: exp.Expression) -> str:
+def _canonical(pred: exp.Expr) -> str:
     while isinstance(pred, exp.Paren):
         pred = pred.this
     if isinstance(pred, exp.EQ):

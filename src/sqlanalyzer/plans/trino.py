@@ -20,7 +20,8 @@ def _num(text: str) -> float | None:
     m = re.fullmatch(r"([\d.,]+)\s*([KMBGT]?)", text.strip())
     if not m:
         return None
-    return to_float(m.group(1)) * _MULT[m.group(2)] if to_float(m.group(1)) is not None else None
+    value = to_float(m.group(1))
+    return value * _MULT[m.group(2)] if value is not None else None
 
 
 def _kind(op: str) -> str:

@@ -22,6 +22,7 @@ from .sqlutil import (
     is_wrapped,
     locate,
     real_tables,
+    select_of,
     select_scopes,
     table_names,
 )
@@ -61,7 +62,7 @@ def _hinted_columns(table: exp.Table, hints: PartitionHints) -> set[str]:
     return cols
 
 
-def analyze_partitions(statements: list[exp.Expression], hints: PartitionHints | None = None) -> list[Finding]:
+def analyze_partitions(statements: list[exp.Expr], hints: PartitionHints | None = None) -> list[Finding]:
     hints = hints or {}
     out: list[Finding] = []
     for stmt in statements:
@@ -71,7 +72,7 @@ def analyze_partitions(statements: list[exp.Expression], hints: PartitionHints |
 
 
 def _analyze_scope(scope, hints: PartitionHints) -> list[Finding]:
-    sel: exp.Select = scope.expression
+    sel = select_of(scope)
     tables = real_tables(scope)
     if not tables:
         return []
@@ -100,52 +101,52 @@ def _analyze_scope(scope, hints: PartitionHints) -> list[Finding]:
         origin = "configured" if configured else "likely"
         status = {c: _status(c, alias, preds, tables, sel) for c in part_cols}
 
-        for col, (kind, node) in status.items():
+        for name, (kind, node) in status.items():
             line, colno = locate(node) if node is not None else locate(table)
             if kind == "wrapped":
                 out.append(Finding(
                     "partition-column-wrapped", Severity.WARNING, Category.PARTITION,
-                    f"Predicate on {origin} partition column '{alias}.{col}' wraps it in a function/cast/arithmetic; partitions cannot be pruned.",
+                    f"Predicate on {origin} partition column '{alias}.{name}' wraps it in a function/cast/arithmetic; partitions cannot be pruned.",
                     "Compare the bare column against constants, e.g. dt >= DATE '2024-01-01' AND dt < DATE '2024-02-01'.",
                     line, colno))
             elif kind == "leading-wildcard":
                 out.append(Finding(
                     "partition-like-wildcard", Severity.WARNING, Category.PARTITION,
-                    f"LIKE with leading wildcard on {origin} partition column '{alias}.{col}' cannot prune partitions.",
+                    f"LIKE with leading wildcard on {origin} partition column '{alias}.{name}' cannot prune partitions.",
                     "Use equality, IN, or a range on the partition column.", line, colno))
             elif kind == "non-constant":
                 out.append(Finding(
                     "partition-dynamic-filter", Severity.INFO, Category.PARTITION,
-                    f"Partition column '{alias}.{col}' is filtered by a non-constant expression (column or subquery).",
+                    f"Partition column '{alias}.{name}' is filtered by a non-constant expression (column or subquery).",
                     "Pruning then depends on runtime/dynamic filtering. Where possible, supply a literal range as well.",
                     line, colno))
             elif kind == "or":
                 out.append(Finding(
                     "partition-or-filter", Severity.WARNING, Category.PARTITION,
-                    f"Filter on {origin} partition column '{alias}.{col}' is inside an OR with other columns; pruning is likely lost.",
+                    f"Filter on {origin} partition column '{alias}.{name}' is inside an OR with other columns; pruning is likely lost.",
                     "Restructure as UNION ALL, or AND the partition filter outside the OR.", line, colno))
             elif kind == "none" and configured:
                 out.append(Finding(
                     "missing-partition-filter", Severity.WARNING, Category.PARTITION,
                     f"No filter on partition column(s) of '{qualified}' ({', '.join(sorted(configured))}); all partitions will be scanned.",
-                    f"Add a predicate on '{col}'.", *locate(table)))
+                    f"Add a predicate on '{name}'.", *locate(table)))
                 break  # one finding per table is enough
             elif kind == "none" and not configured:
                 out.append(Finding(
                     "possible-missing-partition-filter", Severity.INFO, Category.PARTITION,
-                    f"'{alias}.{col}' looks like a partition column but is not filtered.",
+                    f"'{alias}.{name}' looks like a partition column but is not filtered.",
                     "If the table is partitioned on it, add a predicate to enable pruning "
                     "(declare partition columns in the Partition hints box for precise checks).",
-                    *locate(referenced[alias][col])))
+                    *locate(referenced[alias][name])))
     return out
 
 
-def _status(col: str, alias: str, preds: list[exp.Expression], tables: dict[str, exp.Table], sel: exp.Select):
+def _status(col: str, alias: str, preds: list[exp.Expr], tables: dict[str, exp.Table], sel: exp.Select):
     """Classify how ``alias.col`` is constrained: ok|wrapped|non-constant|or|leading-wildcard|none."""
-    best: tuple[str, exp.Expression | None] = ("none", None)
+    best: tuple[str, exp.Expr | None] = ("none", None)
     order = {"none": 0, "non-constant": 1, "or": 2, "wrapped": 3, "leading-wildcard": 3, "ok": 4}
 
-    def consider(kind: str, node: exp.Expression) -> None:
+    def consider(kind: str, node: exp.Expr) -> None:
         nonlocal best
         if order[kind] > order[best[0]]:
             best = (kind, node)
@@ -168,7 +169,7 @@ def _status(col: str, alias: str, preds: list[exp.Expression], tables: dict[str,
     return best
 
 
-def _classify(p: exp.Expression, mine, consider) -> None:
+def _classify(p: exp.Expr, mine, consider) -> None:
     if isinstance(p, (exp.Like, exp.ILike)):
         if any(mine(c) for c in p.this.find_all(exp.Column)):
             pat = p.expression

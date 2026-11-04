@@ -20,13 +20,13 @@ class NotInToNotExistsRule(Rule):
     safety = Safety.REVIEW
     fixes = ("not-in-subquery",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Not, exp.All) is not None and expression.find(exp.Subquery, exp.All) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
 
-        def fn(node: exp.Expression) -> exp.Expression | None:
+        def fn(node: exp.Expr) -> exp.Expr | None:
             if isinstance(node, exp.Not) and isinstance(node.this, exp.In):
                 in_ = node.this
                 query = in_.args.get("query")
@@ -59,7 +59,7 @@ class NotInToNotExistsRule(Rule):
         return expression, out
 
 
-def _rewritable(inner: exp.Select, outer_value: exp.Expression) -> bool:
+def _rewritable(inner: exp.Select, outer_value: exp.Expr) -> bool:
     if len(inner.expressions) != 1 or isinstance(inner.expressions[0].unalias(), exp.Star):
         return False
     for key in ("group", "having", "limit", "offset", "distinct", "order", "qualify", "with_", "with"):
@@ -94,11 +94,11 @@ class SubqueryOrderByRule(Rule):
     safety = Safety.REVIEW
     fixes = ("order-by-in-subquery",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return any(isinstance(o.parent, exp.Select) and o.parent.parent is not None
                    for o in expression.find_all(exp.Order))
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for sel in list(expression.find_all(exp.Select)):
             order = sel.args.get("order")
@@ -143,10 +143,10 @@ class UnusedCteRule(Rule):
     category = "subqueries"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.With) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         changed = True
         while changed:
@@ -186,10 +186,10 @@ class DistinctInSemiJoinRule(Rule):
     category = "subqueries"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Distinct) is not None and expression.find(exp.In, exp.Exists) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for node in list(expression.find_all(exp.In, exp.Exists)):
             query = node.args.get("query") if isinstance(node, exp.In) else node.this
@@ -219,10 +219,10 @@ class ExistsProjectionRule(Rule):
     category = "subqueries"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Exists) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for node in list(expression.find_all(exp.Exists)):
             query = node.this

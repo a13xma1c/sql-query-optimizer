@@ -6,7 +6,7 @@ from sqlanalyzer.dialects import Engine, explain_statement
 from sqlanalyzer.plans import PlanParseError, parse_plan
 from sqlanalyzer.plans.analysis import analyze_plan
 from sqlanalyzer.plans.diff import ADDED, REMOVED, diff_plans
-from sqlanalyzer.plans.graph import build_graph, graphviz_available, render_svg
+from sqlanalyzer.plans.graph import build_graph, graphviz_available, heat_map, render_pdf, render_png, render_svg
 
 
 def rules(plan) -> set[str]:
@@ -98,7 +98,9 @@ def test_compare_queries_reports_resolved_findings():
     b = analyze_query("SELECT t.x FROM t JOIN u ON t.id = u.id WHERE t.x = 1", Engine.POSTGRES)
     cmp = compare_queries(a, b)
     assert {f.rule for f in cmp.resolved} >= {"select-star", "cartesian-join"}
-    assert cmp.plan_diff is None
+    # no EXPLAIN was run, so the offline plans are compared instead
+    assert cmp.offline_plans and cmp.plan_diff is not None and not cmp.plan_diff.identical
+    assert any("Cross Join" in (e.old.op if e.old else "") for e in cmp.plan_diff.entries)
 
 
 def test_plan_parse_failure_becomes_finding():
@@ -121,3 +123,75 @@ def test_render_svg():
                          (Engine.TRINO, "trino_plan.txt")]:
         svg = render_svg(parse_plan(engine, read(name)))
         assert svg.startswith(b"<?xml") and b"<svg" in svg
+
+
+def test_graph_nodes_and_edges_have_stable_ids():
+    plan = parse_plan(Engine.POSTGRES, read("postgres_plan.json"))
+    src = build_graph(plan).source
+    for node in plan.nodes():
+        assert f"id=n{node.id} " in src
+    for node in plan.nodes():
+        for child in node.children:
+            assert f"e{child.id}_{node.id}" in src
+
+
+def test_heat_map_shares_sum_to_one_and_prefers_measured_time():
+    plan = parse_plan(Engine.POSTGRES, read("postgres_plan.json"))
+    heat = heat_map(plan)
+    assert plan.analyzed  # this fixture has actual timings
+    assert heat and abs(sum(heat.values()) - 1.0) < 1e-9
+    assert all(0.0 <= v <= 1.0 for v in heat.values())
+
+
+def test_heat_map_empty_without_any_cost_or_time():
+    from sqlanalyzer.plans.model import OTHER, Plan, PlanNode
+
+    plan = Plan(engine=Engine.POSTGRES, root=PlanNode(id=0, op="Result", kind=OTHER))
+    assert heat_map(plan) == {}
+
+
+def test_heat_color_is_monotonic_and_clamped():
+    from sqlanalyzer.plans.graph import heat_color
+
+    lo, mid, hi = heat_color(0.0), heat_color(0.5), heat_color(1.0)
+    assert lo != mid != hi
+    assert heat_color(-5) == lo and heat_color(5) == hi
+
+
+def test_build_graph_with_heat_fills_nodes_with_the_ramp_colour():
+    from sqlanalyzer.plans.graph import heat_color
+
+    plan = parse_plan(Engine.POSTGRES, read("postgres_plan.json"))
+    heat = {plan.root.id: 1.0}
+    src = build_graph(plan, heat=heat).source
+    assert heat_color(1.0) in src
+    assert "heat 100%" in src
+
+
+def test_build_graph_collapsed_subtree_hides_descendants():
+    plan = parse_plan(Engine.POSTGRES, read("postgres_plan.json"))
+    collapsed = {plan.root.id}
+    src = build_graph(plan, collapsed=collapsed).source
+    for node in plan.nodes():
+        if node.id != plan.root.id:
+            assert f"id=n{node.id} " not in src
+    assert "collapsed" in src
+
+
+def test_build_graph_glyphs_do_not_rely_on_colour_alone():
+    plan = parse_plan(Engine.POSTGRES, read("postgres_plan.json"))
+    src = build_graph(plan, severities={plan.root.id: "error"}).source
+    assert "\u26d4" in src  # the error glyph, not just a red border
+    from sqlanalyzer.plans.diff import ADDED
+
+    src2 = build_graph(plan, status={plan.root.id: ADDED}).source
+    assert "+ " in src2
+
+
+@needs_dot
+def test_render_png_and_pdf():
+    plan = parse_plan(Engine.POSTGRES, read("postgres_plan.json"))
+    png = render_png(plan)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    pdf = render_pdf(plan)
+    assert pdf[:4] == b"%PDF"

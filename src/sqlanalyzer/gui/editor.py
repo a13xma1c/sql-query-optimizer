@@ -1,27 +1,54 @@
-"""SQL code editor: line numbers, syntax highlighting, error underlining."""
+"""SQL code editor: line numbers, syntax highlighting, error underlining, diagnostics tooltips."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 
-from PySide6.QtCore import QRect, QRegularExpression, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QSyntaxHighlighter, QTextCharFormat, QTextFormat
-from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
+from PySide6.QtCore import QPoint, QRect, QRegularExpression, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QPainter,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextCursor,
+    QTextFormat,
+)
+from PySide6.QtWidgets import QAbstractItemView, QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 from ..models import Finding, Severity
+from .theme import LIGHT, HighlightPalette, Theme
 
-_KEYWORDS = (
+# Severity is shown through both colour *and* underline shape/glyph so the editor remains legible
+# without colour (e.g. for colour-blind users or a grayscale screenshot).
+_SEVERITY_STYLE = {
+    Severity.ERROR: (QTextCharFormat.UnderlineStyle.WaveUnderline, "#d73027", "\u26d4"),
+    Severity.WARNING: (QTextCharFormat.UnderlineStyle.DashUnderline, "#e0a100", "\u26a0"),
+    Severity.INFO: (QTextCharFormat.UnderlineStyle.DotLine, "#3b82d4", "\u2139"),
+}
+
+CandidatesFn = Callable[[str, str], tuple[str, list[str]]]
+
+KEYWORDS = (
     "select from where group by order having limit offset join inner left right full outer cross on using as and or "
     "not in is null like ilike between exists case when then else end union all intersect except distinct with "
     "insert into values update set delete create table view over partition rows range asc desc true false cast "
     "lateral unnest qualify fetch first next only filter within pivot unpivot"
 ).split()
+_KEYWORDS = KEYWORDS  # backward-compatible alias
 
 
 class SqlHighlighter(QSyntaxHighlighter):
-    def __init__(self, document) -> None:
+    def __init__(self, document, palette: HighlightPalette = LIGHT) -> None:
         super().__init__(document)
         self._rules: list[tuple[QRegularExpression, QTextCharFormat]] = []
+        self.set_palette(palette)
+
+    def set_palette(self, palette: HighlightPalette) -> None:
+        """Swap token colours (e.g. on a light/dark theme change) and repaint."""
 
         def fmt(color: str, bold: bool = False, italic: bool = False) -> QTextCharFormat:
             f = QTextCharFormat()
@@ -34,16 +61,17 @@ class SqlHighlighter(QSyntaxHighlighter):
         kw = r"\b(?:" + "|".join(_KEYWORDS) + r")\b"
         opts = QRegularExpression.PatternOption.CaseInsensitiveOption
         self._rules = [
-            (QRegularExpression(r"\b\d+(?:\.\d+)?\b"), fmt("#b45f06")),
-            (QRegularExpression(r"\b[A-Za-z_][\w$]*(?=\s*\()"), fmt("#7c5cd8")),
-            (QRegularExpression(kw, opts), fmt("#1f6feb", bold=True)),
-            (QRegularExpression(r"'(?:[^']|'')*'"), fmt("#0a7d36")),
-            (QRegularExpression(r'"[^"]*"'), fmt("#0a7d36")),
-            (QRegularExpression(r"--[^\n]*"), fmt("#6e7781", italic=True)),
+            (QRegularExpression(r"\b\d+(?:\.\d+)?\b"), fmt(palette.number)),
+            (QRegularExpression(r"\b[A-Za-z_][\w$]*(?=\s*\()"), fmt(palette.call)),
+            (QRegularExpression(kw, opts), fmt(palette.keyword, bold=True)),
+            (QRegularExpression(r"'(?:[^']|'')*'"), fmt(palette.string)),
+            (QRegularExpression(r'"[^"]*"'), fmt(palette.string)),
+            (QRegularExpression(r"--[^\n]*"), fmt(palette.comment, italic=True)),
         ]
-        self._block = fmt("#6e7781", italic=True)
+        self._block = fmt(palette.comment, italic=True)
         self._start = QRegularExpression(r"/\*")
         self._end = QRegularExpression(r"\*/")
+        self.rehighlight()
 
     def highlightBlock(self, text: str) -> None:
         for rx, f in self._rules:
@@ -77,6 +105,13 @@ class _LineNumbers(QWidget):
         self._editor.paint_line_numbers(event)
 
 
+@dataclass
+class _Diagnostic:
+    start: int  # absolute document position
+    end: int
+    finding: Finding
+
+
 class CodeEditor(QPlainTextEdit):
     def __init__(self, placeholder: str = "") -> None:
         super().__init__()
@@ -86,11 +121,67 @@ class CodeEditor(QPlainTextEdit):
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
         self._numbers = _LineNumbers(self)
         self._marks: list[QTextEdit.ExtraSelection] = []
+        self._diagnostics: list[_Diagnostic] = []
         self._highlighter = SqlHighlighter(self.document())
+        self._completer: QCompleter | None = None
+        # (sql, text_before_cursor) -> (prefix, options); see .completer
+        self._candidates_fn: CandidatesFn | None = None
         self.blockCountChanged.connect(self._update_margin)
         self.updateRequest.connect(self._scroll_numbers)
         self.cursorPositionChanged.connect(self._refresh_selections)
+        self.setMouseTracking(True)
         self._update_margin()
+
+    # -- autocomplete -----------------------------------------------------------------
+    def set_completer(self, completer: QCompleter, candidates_fn: CandidatesFn) -> None:
+        """Attach a popup completer; ``candidates_fn(sql, text_before_cursor) -> (prefix, options)``
+        decides what to offer (see :mod:`sqlanalyzer.gui.completer`), keeping this class itself free
+        of any schema-specific logic."""
+        if self._completer is not None:
+            self._completer.activated.disconnect(self._insert_completion)
+        self._completer = completer
+        self._candidates_fn = candidates_fn
+        completer.setWidget(self)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.activated.connect(self._insert_completion)
+
+    def _insert_completion(self, text: str) -> None:
+        if self._completer is None:
+            return
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor,
+                            len(self._completer.completionPrefix()))
+        cursor.insertText(text)
+        self.setTextCursor(cursor)
+
+    def _text_before_cursor(self) -> str:
+        cursor = self.textCursor()
+        return cursor.block().text()[: cursor.positionInBlock()]
+
+    def _popup(self) -> QAbstractItemView | None:
+        """The completer's list view (``None`` without a completer; Qt always creates one otherwise)."""
+        return self._completer.popup() if self._completer is not None else None
+
+    def _update_completer_popup(self) -> None:
+        popup = self._popup()
+        if self._completer is None or self._candidates_fn is None or popup is None:
+            return
+        prefix, options = self._candidates_fn(self.toPlainText(), self._text_before_cursor())
+        if not options:
+            popup.hide()
+            return
+        from PySide6.QtCore import QStringListModel
+
+        self._completer.setModel(QStringListModel(options, self._completer))
+        self._completer.setCompletionPrefix(prefix)
+        if self._completer.completionCount() == 0:
+            popup.hide()
+            return
+        popup.setCurrentIndex(self._completer.completionModel().index(0, 0))
+        rect = self.cursorRect()
+        rect.setWidth(popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width())
+        self._completer.complete(rect)
 
     # -- line numbers -----------------------------------------------------------------
     def line_number_width(self) -> int:
@@ -130,30 +221,64 @@ class CodeEditor(QPlainTextEdit):
 
     # -- diagnostics ------------------------------------------------------------------
     def mark_findings(self, findings: list[Finding]) -> None:
-        """Underline the lines of findings that carry a position."""
+        """Underline the lines of findings that carry a position.
+
+        Severity is encoded redundantly as colour *and* underline style (wave/dash/dot), so the
+        distinction still reads without colour. Hovering an underlined span shows the finding's
+        message as a tooltip (see :meth:`event`).
+        """
         self._marks = []
-        colors = {Severity.ERROR: "#d73027", Severity.WARNING: "#e0a100", Severity.INFO: "#3b82d4"}
+        self._diagnostics = []
         for f in sorted(findings, key=lambda f: -f.severity.rank):  # errors painted last (on top)
             if not f.line:
                 continue
             block = self.document().findBlockByNumber(f.line - 1)
             if not block.isValid():
                 continue
+            style, color, _glyph = _SEVERITY_STYLE[f.severity]
             sel = QTextEdit.ExtraSelection()
             sel.cursor = self.textCursor()
-            sel.cursor.setPosition(block.position() + max((f.col or 1) - 1, 0))
+            start = block.position() + max((f.col or 1) - 1, 0)
+            sel.cursor.setPosition(start)
             sel.cursor.movePosition(sel.cursor.MoveOperation.EndOfWord, sel.cursor.MoveMode.KeepAnchor)
             if not sel.cursor.hasSelection():
                 sel.cursor.setPosition(block.position())
                 sel.cursor.movePosition(sel.cursor.MoveOperation.EndOfBlock, sel.cursor.MoveMode.KeepAnchor)
-            sel.format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
-            sel.format.setUnderlineColor(QColor(colors[f.severity]))
+            sel.format.setUnderlineStyle(style)
+            sel.format.setUnderlineColor(QColor(color))
             self._marks.append(sel)
+            self._diagnostics.append(_Diagnostic(start, sel.cursor.position(), f))
         self._refresh_selections()
 
     def clear_marks(self) -> None:
         self._marks = []
+        self._diagnostics = []
         self._refresh_selections()
+
+    def diagnostic_at(self, pos: QPoint) -> Finding | None:
+        """The finding whose underline contains the widget position ``pos``, if any."""
+        cursor = self.cursorForPosition(pos)
+        offset = cursor.position()
+        for diag in self._diagnostics:
+            if diag.start <= offset <= diag.end:
+                return diag.finding
+        return None
+
+    def event(self, event) -> bool:  # noqa: N802 - Qt override
+        from PySide6.QtCore import QEvent
+
+        if event.type() == QEvent.Type.ToolTip:
+            finding = self.diagnostic_at(event.pos())
+            if finding is not None:
+                _style, _color, glyph = _SEVERITY_STYLE[finding.severity]
+                text = f"{glyph} [{finding.rule}] {finding.message}"
+                if finding.suggestion:
+                    text += f"\n\n{finding.suggestion}"
+                QToolTip.showText(event.globalPos(), text, self)
+            else:
+                QToolTip.hideText()
+            return True
+        return super().event(event)
 
     def _refresh_selections(self) -> None:
         current = QTextEdit.ExtraSelection()
@@ -162,6 +287,34 @@ class CodeEditor(QPlainTextEdit):
         current.cursor = self.textCursor()
         current.cursor.clearSelection()
         self.setExtraSelections([current, *self._marks])
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        popup = self._popup()
+        if popup is not None and popup.isVisible() and event.key() in (
+            Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Escape, Qt.Key.Key_Tab, Qt.Key.Key_Backtab,
+        ):
+            event.ignore()  # QCompleter itself (installed as an event filter) handles these
+            return
+        is_shortcut = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier) and event.key() == Qt.Key.Key_Space
+        if popup is None or not is_shortcut:
+            super().keyPressEvent(event)
+        if popup is None:
+            return
+        ctrl_or_shift = bool(event.modifiers() & (Qt.KeyboardModifier.ControlModifier
+                                                  | Qt.KeyboardModifier.ShiftModifier))
+        if ctrl_or_shift and not event.text():
+            return
+        has_modifier = event.modifiers() != Qt.KeyboardModifier.NoModifier and not ctrl_or_shift
+        if not is_shortcut and (has_modifier or not event.text()):
+            popup.hide()
+            return
+        self._update_completer_popup()
+
+    def set_theme(self, theme: Theme) -> None:
+        """Re-derive the syntax highlighter's colours for a light/dark/system theme."""
+        from .theme import highlight_palette
+
+        self._highlighter.set_palette(highlight_palette(theme))
 
     def goto(self, line: int, col: int | None = None) -> None:
         block = self.document().findBlockByNumber(max(line - 1, 0))

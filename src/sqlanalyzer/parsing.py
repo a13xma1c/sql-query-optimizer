@@ -14,7 +14,7 @@ from .models import Category, Finding, Severity
 
 @dataclass
 class ParseResult:
-    statements: list[exp.Expression] = field(default_factory=list)
+    statements: list[exp.Expr] = field(default_factory=list)
     errors: list[Finding] = field(default_factory=list)
 
     @property
@@ -22,7 +22,7 @@ class ParseResult:
         return not self.errors
 
     @property
-    def first(self) -> exp.Expression | None:
+    def first(self) -> exp.Expr | None:
         return self.statements[0] if self.statements else None
 
 

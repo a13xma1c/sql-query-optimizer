@@ -1,0 +1,146 @@
+name: Release
+
+# Tag a commit `vX.Y.Z` (matching pyproject.toml / sqlanalyzer.__version__) to build the wheel,
+# the sdist and the desktop bundles for all three platforms and attach them to a GitHub release.
+# Publishing to PyPI is deliberately a separate, manual step (see the `publish` job).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Also publish the wheel/sdist to PyPI (requires trusted publishing)"
+        type: boolean
+        default: false
+
+env:
+  UV_VERSION: "0.13.6"
+  QT_QPA_PLATFORM: offscreen
+  PYTHONUTF8: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Version tag matches the package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Check the tag against pyproject.toml and __version__
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(uv run --no-project python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          MOD=$(grep -E '^__version__ = ' src/sqlanalyzer/__init__.py | cut -d'"' -f2)
+          echo "tag=$TAG pyproject=$PKG module=$MOD"
+          test "$TAG" = "$PKG" && test "$TAG" = "$MOD"
+
+  python-package:
+    name: Wheel and sdist
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv build
+      - run: uv run --no-project --with twine twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+  bundle:
+    name: Desktop bundle (${{ matrix.os }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  artifact: sqlanalyzer-linux-x86_64.tar.gz }
+          - { os: macos-latest,   artifact: sqlanalyzer-macos-arm64.zip }
+          - { os: windows-latest, artifact: sqlanalyzer-windows-x86_64.zip }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libdbus-1-3 libfontconfig1 libglib2.0-0
+      - run: uv sync --group packaging
+      - run: uv run --group packaging pyinstaller packaging/sqlanalyzer.spec --noconfirm --log-level WARN
+      - name: Self-check the frozen bundle
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then BIN="dist/SQL Analyzer.app/Contents/MacOS/sqlanalyzer";
+          elif [ "$RUNNER_OS" = "Windows" ]; then BIN="dist/sqlanalyzer/sqlanalyzer.exe";
+          else BIN="dist/sqlanalyzer/sqlanalyzer"; fi
+          "$BIN" --version
+          "$BIN" --self-check
+      - name: Archive
+        shell: bash
+        run: |
+          mkdir -p bundle
+          if [ "$RUNNER_OS" = "macOS" ]; then (cd dist && zip -qr "../bundle/${{ matrix.artifact }}" "SQL Analyzer.app");
+          elif [ "$RUNNER_OS" = "Windows" ]; then (cd dist && 7z a -bd "../bundle/${{ matrix.artifact }}" sqlanalyzer > /dev/null);
+          else (cd dist && tar czf "../bundle/${{ matrix.artifact }}" sqlanalyzer); fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.os }}
+          path: bundle/
+
+  github-release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python-package, bundle]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release/ \;
+          ls -l release/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+
+  publish:
+    name: Publish to PyPI
+    # Opt-in: only when dispatched by hand with `publish: true`. Uses PyPI trusted publishing
+    # (configure the `pypi` environment + a trusted publisher for this repository first).
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: [python-package, bundle]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv publish --trusted-publishing always

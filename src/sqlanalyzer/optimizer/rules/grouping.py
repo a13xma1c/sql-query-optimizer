@@ -19,10 +19,10 @@ class HavingToWhereRule(Rule):
     safety = Safety.SAFE
     fixes = ("having-without-aggregate",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Having) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for sel in list(expression.find_all(exp.Select)):
             having = sel.args.get("having")
@@ -69,10 +69,10 @@ class RedundantDistinctRule(Rule):
     category = "aggregation"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Distinct) is not None and expression.find(exp.Group) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for sel in list(expression.find_all(exp.Select)):
             distinct = sel.args.get("distinct")
@@ -105,10 +105,10 @@ class UnionAllRule(Rule):
     safety = Safety.REVIEW
     fixes = ("union-distinct",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return any(u.args.get("distinct") for u in expression.find_all(exp.Union))
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
         for union in list(expression.find_all(exp.Union)):
             if not union.args.get("distinct"):

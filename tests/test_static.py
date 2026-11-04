@@ -46,6 +46,7 @@ def test_select_star_and_count_star():
 def test_lint_rules():
     r = rules("SELECT a FROM t WHERE b = NULL AND c NOT IN (SELECT c FROM u WHERE x = 1) AND d LIKE '%x' ORDER BY 1")
     assert {"null-comparison", "not-in-subquery", "leading-wildcard", "order-by-ordinal"} <= r
+    assert "not-in-subquery" in rules("SELECT a FROM t WHERE a NOT IN (SELECT b FROM u)", "snowflake")
     assert "union-distinct" in rules("SELECT a FROM t WHERE a=1 UNION SELECT a FROM u WHERE a=1")
     assert "missing-where" in rules("DELETE FROM t")
     assert "limit-without-order" in rules("SELECT a FROM t WHERE a = 1 LIMIT 5")

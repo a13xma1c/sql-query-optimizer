@@ -1,6 +1,6 @@
 """Abstract syntax trees built with SQLGlot.
 
-SQLGlot parses SQL into a tree of :class:`sqlglot.exp.Expression` objects. This
+SQLGlot parses SQL into a tree of :class:`sqlglot.exp.Expr` objects. This
 module wraps that tree in a small, serialisable :class:`AstNode` model that the
 GUI, the rule-based optimizer and tests can share:
 
@@ -29,7 +29,7 @@ from .parsing import ParseResult, parse_sql
 
 MAX_SQL_LABEL = 80
 
-_OPERATOR_SYMBOLS: dict[type[exp.Expression], str] = {
+_OPERATOR_SYMBOLS: dict[type[exp.Expr], str] = {
     exp.EQ: "=", exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=",
     exp.And: "AND", exp.Or: "OR", exp.Not: "NOT", exp.Add: "+", exp.Sub: "-", exp.Mul: "*",
     exp.Div: "/", exp.Mod: "%", exp.DPipe: "||", exp.Is: "IS", exp.In: "IN", exp.Like: "LIKE",
@@ -57,7 +57,7 @@ class AstNode:
     start: int | None = None  # 0-based character offsets (inclusive start, inclusive end)
     end: int | None = None
     children: list[AstNode] = field(default_factory=list)
-    expression: exp.Expression | None = field(default=None, repr=False, compare=False)
+    expression: exp.Expr | None = field(default=None, repr=False, compare=False)
     dialect: str | None = field(default=None, repr=False, compare=False)
     _sql: str | None = field(default=None, repr=False, compare=False)
 
@@ -137,7 +137,7 @@ class AstStats:
 
 
 # ------------------------------------------------------------------------------ build
-def node_label(e: exp.Expression) -> str:
+def node_label(e: exp.Expr) -> str:
     """Short text shown next to the node kind."""
     if isinstance(e, exp.Identifier):
         return e.name
@@ -175,7 +175,7 @@ def node_label(e: exp.Expression) -> str:
     return ""
 
 
-def _span(e: exp.Expression) -> tuple[int | None, int | None, int | None, int | None]:
+def _span(e: exp.Expr) -> tuple[int | None, int | None, int | None, int | None]:
     """(line, col, start, end) from tokenizer metadata of the subtree (best effort)."""
     first: dict | None = None
     end: int | None = None
@@ -198,22 +198,22 @@ def _truncate(sql: str) -> str:
     return sql if len(sql) <= MAX_SQL_LABEL else sql[: MAX_SQL_LABEL - 1] + "…"
 
 
-def build_ast(expression: exp.Expression, dialect: str | None = None) -> AstNode:
+def build_ast(expression: exp.Expr, dialect: str | None = None) -> AstNode:
     """Convert a SQLGlot expression into an :class:`AstNode` tree (pre-order ids)."""
     counter = 0
 
-    def build(e: exp.Expression, arg: str, depth: int) -> AstNode:
+    def build(e: exp.Expr, arg: str, depth: int) -> AstNode:
         nonlocal counter
         line, col, start, end = _span(e)
         node = AstNode(counter, type(e).__name__, arg, node_label(e), depth, line, col, start, end,
                        expression=e, dialect=dialect)
         counter += 1
         for key, value in e.args.items():
-            if isinstance(value, exp.Expression):
+            if isinstance(value, exp.Expr):
                 node.children.append(build(value, key, depth + 1))
             elif isinstance(value, list):
                 for i, item in enumerate(value):
-                    if isinstance(item, exp.Expression):
+                    if isinstance(item, exp.Expr):
                         node.children.append(build(item, f"{key}[{i}]", depth + 1))
         return node
 

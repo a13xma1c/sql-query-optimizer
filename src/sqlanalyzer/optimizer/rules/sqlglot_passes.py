@@ -26,10 +26,10 @@ class _PassRule(Rule):
     """Base: run a SQLGlot pass and describe the change per SELECT block."""
 
     requires_qualified = True
-    pass_fn: Callable[..., exp.Expression]
+    pass_fn: Callable[..., exp.Expr]
     pass_kwargs: dict = {}
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         before = expression.copy()
         kwargs = dict(self.pass_kwargs)
         params = inspect.signature(self.pass_fn).parameters
@@ -38,7 +38,7 @@ class _PassRule(Rule):
         after = self.pass_fn(expression, **kwargs)
         return after, self.describe(before, after, ctx)
 
-    def describe(self, before: exp.Expression, after: exp.Expression, ctx: RuleContext) -> list[Rewrite]:
+    def describe(self, before: exp.Expr, after: exp.Expr, ctx: RuleContext) -> list[Rewrite]:
         out: list[Rewrite] = []
         old_ctes = {c.alias for c in before.find_all(exp.CTE)}
         new_ctes = {c.alias for c in after.find_all(exp.CTE)}
@@ -58,8 +58,8 @@ class _PassRule(Rule):
 
     whole_query_text = "Query restructured."
 
-    def changed_clauses(self, o: exp.Select, n: exp.Select, ctx: RuleContext) -> list[tuple[str, object, object]]:
-        out: list[tuple[str, object, object]] = []
+    def changed_clauses(self, o: exp.Select, n: exp.Select, ctx: RuleContext) -> list[tuple[str, exp.Expr | str, exp.Expr | str]]:
+        out: list[tuple[str, exp.Expr | str, exp.Expr | str]] = []
         d = ctx.dialect
         for key, label in (("where", "WHERE"), ("having", "HAVING")):
             ob, nb = o.args.get(key), n.args.get(key)
@@ -87,7 +87,7 @@ class _PassRule(Rule):
 
 
 class _SubqueryPassRule(_PassRule):
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Subquery, exp.CTE) is not None
 
 
@@ -125,7 +125,7 @@ class MergeSubqueriesRule(_SubqueryPassRule):
     pass_fn = staticmethod(merge_subqueries)
     whole_query_text = "Subquery merged into its outer query."
 
-    def describe(self, before: exp.Expression, after: exp.Expression, ctx: RuleContext) -> list[Rewrite]:
+    def describe(self, before: exp.Expr, after: exp.Expr, ctx: RuleContext) -> list[Rewrite]:
         nb, na = _count_sources(before), _count_sources(after)
         if nb == na:
             return []
@@ -144,7 +144,7 @@ class EliminateSubqueriesRule(_SubqueryPassRule):
     fixes = ("repeated-scan",)
     pass_fn = staticmethod(eliminate_subqueries)
 
-    def describe(self, before: exp.Expression, after: exp.Expression, ctx: RuleContext) -> list[Rewrite]:
+    def describe(self, before: exp.Expr, after: exp.Expr, ctx: RuleContext) -> list[Rewrite]:
         nb, na = _count_sources(before), _count_sources(after)
         if nb <= na:
             return []
@@ -166,7 +166,7 @@ class UnnestSubqueriesRule(_SubqueryPassRule):
 
 
 class EliminateJoinsRule(_PassRule):
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Join) is not None
 
     name = "eliminate-joins"
@@ -180,7 +180,7 @@ class EliminateJoinsRule(_PassRule):
 
 
 class OptimizeJoinsRule(_PassRule):
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Join) is not None
 
     name = "optimize-joins"
@@ -193,11 +193,11 @@ class OptimizeJoinsRule(_PassRule):
     whole_query_text = "Joins reorganised."
 
 
-def _canon(node: exp.Expression | None, dialect: str) -> str:
+def _canon(node: exp.Expr | None, dialect: str) -> str:
     return canonical_sql(node, dialect) if node is not None else ""
 
 
-def _count_sources(expression: exp.Expression) -> int:
+def _count_sources(expression: exp.Expr) -> int:
     return sum(1 for n in expression.find_all(exp.Subquery, exp.CTE) if isinstance(n.parent, (exp.From, exp.Join, exp.With)))
 
 

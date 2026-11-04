@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QPlainTextEdit, QVBoxLayout
 
 from ..dialects import ENGINES, Engine
+from .geometry import fit_dialog
 
 
 class PastePlanDialog(QDialog):
@@ -12,7 +13,7 @@ class PastePlanDialog(QDialog):
         super().__init__(parent)
         info = ENGINES[engine]
         self.setWindowTitle(f"Paste {info.label} plan")
-        self.resize(720, 460)
+        fit_dialog(self, 720, 460)
         self.text = QPlainTextEdit(current)
         self.text.setPlaceholderText(f"Output of {info.plan_format}")
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)

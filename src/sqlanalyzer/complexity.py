@@ -44,7 +44,7 @@ _WEIGHTS: dict[str, tuple[float, float]] = {
 }
 
 
-def analyze_complexity(statements: list[exp.Expression]) -> ComplexityReport:
+def analyze_complexity(statements: list[exp.Expr]) -> ComplexityReport:
     m = dict.fromkeys(_WEIGHTS, 0)
     m["statements"] = len(statements)
     tables: set[str] = set()
@@ -81,11 +81,11 @@ def analyze_complexity(statements: list[exp.Expression]) -> ComplexityReport:
     return ComplexityReport(m, score, level, contrib)
 
 
-def _depth(node: exp.Expression) -> int:
+def _depth(node: exp.Expr) -> int:
     """Maximum nesting of SELECT blocks (a plain statement is depth 1)."""
     best = 0
 
-    def walk(n: exp.Expression, d: int) -> None:
+    def walk(n: exp.Expr, d: int) -> None:
         nonlocal best
         if isinstance(n, exp.Select):
             d += 1

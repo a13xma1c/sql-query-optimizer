@@ -1,0 +1,7 @@
+customers (rows=1000): id integer pk, name varchar, region varchar ndv=3, signup_date date, email varchar
+products (rows=500): id integer pk, sku varchar unique, category varchar ndv=8, price decimal(10,2)
+orders (rows=200000): id integer pk, customer_id integer indexed, ts timestamp indexed, status varchar ndv=4, amount integer
+order_items (rows=400000): order_id integer indexed, product_id integer, quantity integer, price decimal(10,2)
+refunds (rows=5000): order_id integer, amt integer, reason varchar ndv=3
+shipments (rows=150000): id integer pk, order_ref varchar, shipped_at timestamp, carrier varchar ndv=4
+events (rows=120000): id bigint, dt date partitioned, user_id integer, kind varchar ndv=3

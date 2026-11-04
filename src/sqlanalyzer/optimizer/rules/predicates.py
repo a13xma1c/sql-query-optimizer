@@ -37,11 +37,11 @@ class NullComparisonRule(Rule):
     safety = Safety.REVIEW  # the original predicate filters out every row, the rewrite does not
     fixes = ("null-comparison",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return any(isinstance(n.parent, (exp.EQ, exp.NEQ)) for n in expression.find_all(exp.Null))
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
-        def fn(node: exp.Expression) -> exp.Expression | None:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
+        def fn(node: exp.Expr) -> exp.Expr | None:
             if not isinstance(node, (exp.EQ, exp.NEQ)):
                 return None
             left, right = node.this, node.expression
@@ -72,20 +72,20 @@ class SargableDateRule(Rule):
     safety = Safety.SAFE
     fixes = ("non-sargable-predicate", "partition-column-wrapped")
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Date, exp.TsOrDsToDate, exp.Year, exp.Extract, exp.Cast) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
 
-        def fn(node: exp.Expression) -> exp.Expression | None:
+        def fn(node: exp.Expr) -> exp.Expr | None:
             if isinstance(node, exp.Between):
                 return self._between(node, ctx, out)
             if not isinstance(node, _ORDER):
                 return None
             left, right = node.this, node.expression
             wrapped = _unwrap_date(left)
-            op: type[exp.Expression] = type(node)
+            op: type[exp.Binary] = type(node)
             if wrapped is None:
                 wrapped = _unwrap_date(right)
                 if wrapped is None:
@@ -103,7 +103,7 @@ class SargableDateRule(Rule):
                 return None
             col = column.copy()
             if op is exp.EQ:
-                new: exp.Expression = exp.and_(exp.GTE(this=col, expression=date_literal(lo)),
+                new: exp.Expr = exp.and_(exp.GTE(this=col, expression=date_literal(lo)),
                                                exp.LT(this=col.copy(), expression=date_literal(hi)), copy=False)
             elif op is exp.GTE:
                 new = exp.GTE(this=col, expression=date_literal(lo))
@@ -121,11 +121,12 @@ class SargableDateRule(Rule):
         transform_predicates(expression, fn)
         return expression, out
 
-    def _between(self, node: exp.Between, ctx: RuleContext, out: list[Rewrite]) -> exp.Expression | None:
+    def _between(self, node: exp.Between, ctx: RuleContext, out: list[Rewrite]) -> exp.Expr | None:
         wrapped = _unwrap_date(node.this)
         if wrapped is None or not isinstance(wrapped[0], exp.Column):
             return None
-        column, unit = wrapped
+        column: exp.Column = wrapped[0]
+        unit = wrapped[1]
         lo = _bounds(unit, node.args["low"])
         hi = _bounds(unit, node.args["high"])
         if lo is None or hi is None:
@@ -139,7 +140,7 @@ class SargableDateRule(Rule):
         out.append(self._describe(node, new, column, ctx))
         return new
 
-    def _describe(self, old: exp.Expression, new: exp.Expression, column: exp.Column, ctx: RuleContext) -> Rewrite:
+    def _describe(self, old: exp.Expr, new: exp.Expr, column: exp.Column, ctx: RuleContext) -> Rewrite:
         text = (f"'{column.sql(dialect=ctx.dialect)}' was wrapped in a function inside the predicate, which "
                 "prevents index use and partition pruning; the equivalent range lets the engine seek/prune.")
         if _column_is_temporal(column, ctx) is True:
@@ -148,7 +149,7 @@ class SargableDateRule(Rule):
         return self.rewrite(old, new, text, ctx, safety=Safety.REVIEW)
 
 
-def _unwrap_date(node: exp.Expression) -> tuple[exp.Expression, str] | None:
+def _unwrap_date(node: exp.Expr) -> tuple[exp.Expr, str] | None:
     """(inner expression, unit) for DATE(x), CAST(x AS DATE), x::date, YEAR(x), EXTRACT(YEAR FROM x)."""
     if isinstance(node, exp.Date) and node.expressions == [] and not node.args.get("zone"):
         return node.this, "day"
@@ -164,7 +165,7 @@ def _unwrap_date(node: exp.Expression) -> tuple[exp.Expression, str] | None:
     return None
 
 
-def _bounds(unit: str, literal: exp.Expression) -> tuple[dt.date, dt.date] | None:
+def _bounds(unit: str, literal: exp.Expr) -> tuple[dt.date, dt.date] | None:
     if unit == "day":
         text = literal_string(literal)
         if text is None:
@@ -179,8 +180,9 @@ def _bounds(unit: str, literal: exp.Expression) -> tuple[dt.date, dt.date] | Non
     return dt.date(year, 1, 1), dt.date(year + 1, 1, 1)
 
 
-def _mirror(op: type[exp.Expression]) -> type[exp.Expression]:
-    return {exp.GT: exp.LT, exp.LT: exp.GT, exp.GTE: exp.LTE, exp.LTE: exp.GTE}.get(op, op)
+def _mirror(op: type[exp.Binary]) -> type[exp.Binary]:
+    flipped: dict[type[exp.Binary], type[exp.Binary]] = {exp.GT: exp.LT, exp.LT: exp.GT, exp.GTE: exp.LTE, exp.LTE: exp.GTE}
+    return flipped.get(op, op)
 
 
 def _column_is_temporal(column: exp.Column, ctx: RuleContext) -> bool | None:
@@ -193,7 +195,7 @@ def _column_is_temporal(column: exp.Column, ctx: RuleContext) -> bool | None:
     if table is None:
         return None
     try:
-        schema = ensure_schema(ctx.schema, dialect=ctx.dialect)
+        schema = ensure_schema(dict(ctx.schema), dialect=ctx.dialect)
         typ = schema.get_column_type(table, column.name, dialect=ctx.dialect)
     except Exception:  # noqa: BLE001 - unknown table/column
         return None
@@ -212,22 +214,22 @@ class OrToInRule(Rule):
     safety = Safety.SAFE
     fixes = ("or-across-columns",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Or) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
 
-        def fn(node: exp.Expression) -> exp.Expression | None:
+        def fn(node: exp.Expr) -> exp.Expr | None:
             if not isinstance(node, exp.Or):
                 return None
             if isinstance(node.parent, exp.Or):
                 return None  # handled at the top of the OR chain
             branches = disjuncts(node)
-            groups: dict[str, list[exp.Expression]] = {}
+            groups: dict[str, list[exp.Expr]] = {}
             order: list[str] = []
-            others: list[exp.Expression] = []
-            keys: dict[str, exp.Expression] = {}
+            others: list[exp.Expr] = []
+            keys: dict[str, exp.Expr] = {}
             for b in branches:
                 key, values = _equality_values(b)
                 if key is None:
@@ -241,7 +243,7 @@ class OrToInRule(Rule):
             merged = [k for k in order if len(groups[k]) >= 2]
             if not merged:
                 return None
-            new_parts: list[exp.Expression] = []
+            new_parts: list[exp.Expr] = []
             for k in order:
                 if len(groups[k]) >= 2:
                     seen: set[str] = set()
@@ -266,7 +268,7 @@ class OrToInRule(Rule):
         return expression, out
 
 
-def _equality_values(pred: exp.Expression) -> tuple[str | None, list[exp.Expression]]:
+def _equality_values(pred: exp.Expr) -> tuple[str | None, list[exp.Expr]]:
     """('col sql', [col, v1, v2]) for ``col = v`` / ``col IN (v1, v2)`` with constant values."""
     while isinstance(pred, exp.Paren):
         pred = pred.this
@@ -291,24 +293,24 @@ class SingleValueInRule(Rule):
     category = "predicates"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return any(len(n.expressions) == 1 for n in expression.find_all(exp.In))
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
 
-        def single(node: exp.Expression) -> exp.Expression | None:
+        def single(node: exp.Expr) -> exp.Expr | None:
             if (isinstance(node, exp.In) and node.args.get("query") is None and not node.args.get("unnest")
                     and len(node.expressions) == 1 and not isinstance(node.expressions[0], (exp.Query, exp.Subquery))):
                 return node.expressions[0]
             return None
 
-        def fn(node: exp.Expression) -> exp.Expression | None:
+        def fn(node: exp.Expr) -> exp.Expr | None:
             if isinstance(node, exp.Not):
                 value = single(node.this)
                 if value is None:
                     return None
-                new: exp.Expression = exp.NEQ(this=node.this.this.copy(), expression=value.copy())
+                new: exp.Expr = exp.NEQ(this=node.this.this.copy(), expression=value.copy())
             else:
                 value = single(node)
                 if value is None:
@@ -330,13 +332,13 @@ class LikeWithoutWildcardRule(Rule):
     category = "predicates"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Like) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
 
-        def fn(node: exp.Expression) -> exp.Expression | None:
+        def fn(node: exp.Expr) -> exp.Expr | None:
             if not isinstance(node, exp.Like) or node.args.get("escape") is not None:
                 return None
             pattern = node.expression
@@ -362,13 +364,13 @@ class PrefixMatchRule(Rule):
     safety = Safety.SAFE
     fixes = ("non-sargable-predicate",)
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Substring, exp.Left) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         out: list[Rewrite] = []
 
-        def fn(node: exp.Expression) -> exp.Expression | None:
+        def fn(node: exp.Expr) -> exp.Expr | None:
             if not isinstance(node, exp.EQ):
                 return None
             left, right = node.this, node.expression
@@ -390,9 +392,11 @@ class PrefixMatchRule(Rule):
         return expression, out
 
 
-def _prefix_of(node: exp.Expression) -> tuple[exp.Expression, int] | None:
+def _prefix_of(node: exp.Expr) -> tuple[exp.Expr, int] | None:
     if isinstance(node, exp.Substring):
-        start, length = literal_int(node.args.get("start")), literal_int(node.args.get("length"))
+        start_arg, length_arg = node.args.get("start"), node.args.get("length")
+        start = literal_int(start_arg) if start_arg is not None else None
+        length = literal_int(length_arg) if length_arg is not None else None
         if start == 1 and length is not None and length > 0 and isinstance(node.this, exp.Column):
             return node.this, length
     if isinstance(node, exp.Left):
@@ -406,11 +410,11 @@ def _prefix_of(node: exp.Expression) -> tuple[exp.Expression, int] | None:
 class _StableSimplifier(Simplifier):
     """SQLGlot's simplifier without the cosmetic re-ordering of operands."""
 
-    def uniq_sort(self, expression, root=True):  # type: ignore[override]
+    def uniq_sort(self, expression, root=True):
         if isinstance(expression, exp.Connector) and not isinstance(expression, exp.Xor) and (
                 root or not expression.same_parent):
             flattened = list(expression.flatten())
-            seen: dict[str, exp.Expression] = {}
+            seen: dict[str, exp.Expr] = {}
             for e in flattened:
                 seen.setdefault(e.sql(), e)
             if len(seen) < len(flattened):
@@ -420,7 +424,7 @@ class _StableSimplifier(Simplifier):
                 return func(*seen.values(), copy=False)
         return expression
 
-    def sort_comparison(self, expression):  # type: ignore[override]
+    def sort_comparison(self, expression):
         # only move constants to the right-hand side: 5 = x -> x = 5
         if expression.__class__ in self.COMPLEMENT_COMPARISONS:
             left, right = expression.this, expression.expression
@@ -429,7 +433,7 @@ class _StableSimplifier(Simplifier):
                     this=right, expression=left)
         return expression
 
-    def rewrite_between(self, expression):  # type: ignore[override]
+    def rewrite_between(self, expression):
         return expression
 
 
@@ -442,10 +446,10 @@ class SimplifyRule(Rule):
     category = "predicates"
     safety = Safety.SAFE
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         return expression.find(exp.Condition) is not None
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         before = expression.copy()
         simplified = _StableSimplifier(ctx.dialect).simplify(expression)
         if before == simplified:

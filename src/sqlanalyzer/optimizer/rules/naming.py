@@ -7,7 +7,7 @@ from sqlglot import exp
 from ..engine import Rewrite, Rule, RuleContext, Safety, try_qualify
 
 
-def _select_stars(expression: exp.Expression) -> list[exp.Star | exp.Column]:
+def _select_stars(expression: exp.Expr) -> list[exp.Star | exp.Column]:
     out: list = []
     for star in expression.find_all(exp.Star):
         parent = star.parent
@@ -36,7 +36,7 @@ class QualifyRule(Rule):
     safety = Safety.SAFE
     fixes = ("select-star",)
 
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         if ctx.qualified:
             return expression, []
         qualified = try_qualify(expression, ctx.dialect, ctx.schema)

@@ -34,7 +34,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.qualify import qualify
-from sqlglot.optimizer.scope import traverse_scope
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from ..sqlutil import locate
 
@@ -67,7 +67,7 @@ class Rewrite:
 
 @dataclass
 class RuleContext:
-    dialect: str
+    dialect: str  # SQLGlot dialect; doubles as the engine name (postgres, duckdb, trino, snowflake)
     schema: Mapping[str, Any] | None = None
     qualified: bool = False  # columns resolved to their tables, no SELECT *
     include_review: bool = True  # rules may emit Safety.REVIEW rewrites
@@ -83,26 +83,27 @@ class Rule(ABC):
     category: ClassVar[str] = "general"
     safety: ClassVar[Safety] = Safety.SAFE
     requires_qualified: ClassVar[bool] = False
+    engines: ClassVar[frozenset[str] | None] = None  # restrict to these dialects (None = every engine)
     fixes: ClassVar[tuple[str, ...]] = ()
 
     @abstractmethod
-    def apply(self, expression: exp.Expression, ctx: RuleContext) -> tuple[exp.Expression, list[Rewrite]]:
+    def apply(self, expression: exp.Expr, ctx: RuleContext) -> tuple[exp.Expr, list[Rewrite]]:
         """Rewrite ``expression`` in place (or return a new root) and describe every change."""
 
-    def precheck(self, expression: exp.Expression) -> bool:
+    def precheck(self, expression: exp.Expr) -> bool:
         """Cheap test whether the rule can possibly apply; saves copying the tree when it cannot."""
         return True
 
     # ------------------------------------------------------------------ helpers
-    def rewrite(self, before: exp.Expression | str, after: exp.Expression | str, description: str,
-                ctx: RuleContext | None = None, node: exp.Expression | None = None,
+    def rewrite(self, before: exp.Expr | str, after: exp.Expr | str, description: str,
+                ctx: RuleContext | None = None, node: exp.Expr | None = None,
                 safety: Safety | None = None) -> Rewrite:
         """Build a :class:`Rewrite`; ``node`` (default: ``before``) supplies the source position."""
         dialect = ctx.dialect if ctx else None
-        if isinstance(before, exp.Expression):
+        if isinstance(before, exp.Expr):
             node = node or before
             before = before.sql(dialect=dialect)
-        if isinstance(after, exp.Expression):
+        if isinstance(after, exp.Expr):
             after = after.sql(dialect=dialect)
         line, col = locate(node) if node is not None else (None, None)
         return Rewrite(self.name, self.title, self.category, safety or self.safety, description, before, after,
@@ -117,7 +118,7 @@ class OptimizationResult:
     dialect: str
     original_sql: str
     optimized_sql: str
-    statements: list[exp.Expression]
+    statements: list[exp.Expr]
     rewrites: list[Rewrite] = field(default_factory=list)
     passes: int = 0
     qualified: bool = False
@@ -153,7 +154,7 @@ class OptimizationResult:
 _COMMUTATIVE = (exp.EQ, exp.NEQ, exp.NullSafeEQ, exp.NullSafeNEQ, exp.Add, exp.Mul)
 
 
-def canonical_sql(expression: exp.Expression, dialect: str | None = None) -> str:
+def canonical_sql(expression: exp.Expr, dialect: str | None = None) -> str:
     """SQL with commutative operands and AND/OR chains in a fixed order.
 
     Used to decide whether a rule *really* changed a query: SQLGlot's passes like
@@ -162,7 +163,7 @@ def canonical_sql(expression: exp.Expression, dialect: str | None = None) -> str
     """
     root = expression.copy()
 
-    def canon(node: exp.Expression) -> exp.Expression:
+    def canon(node: exp.Expr) -> exp.Expr:
         for child in list(node.iter_expressions()):
             new_child = canon(child)
             if new_child is not child:
@@ -181,7 +182,7 @@ def canonical_sql(expression: exp.Expression, dialect: str | None = None) -> str
     return canon(root).sql(dialect=dialect)
 
 
-def invalid_references(expression: exp.Expression) -> list[str]:
+def invalid_references(expression: exp.Expr) -> list[str]:
     """Qualified columns whose table alias is not visible in their scope (or any outer scope)."""
     bad: list[str] = []
     try:
@@ -192,7 +193,7 @@ def invalid_references(expression: exp.Expression) -> list[str]:
         for col in scope.columns:
             if not col.table:
                 continue
-            s = scope
+            s: Scope | None = scope
             while s is not None and col.table not in s.sources:
                 s = s.parent
             if s is None:
@@ -200,25 +201,23 @@ def invalid_references(expression: exp.Expression) -> list[str]:
     return bad
 
 
-def validate(expression: exp.Expression, dialect: str) -> str | None:
+def validate(expression: exp.Expr, dialect: str) -> str | None:
     """Return an error message if ``expression`` is not a sane query, else ``None``."""
     try:
-        sql = expression.sql(dialect=dialect)
-        reparsed = sqlglot.parse_one(sql, read=dialect)
+        sqlglot.parse_one(expression.sql(dialect=dialect), read=dialect)
     except SqlglotError as exc:
         return f"result does not round-trip through the {dialect} parser: {exc}"
-    if reparsed is None:  # pragma: no cover - defensive
-        return "result is empty"
     bad = invalid_references(expression)
     if bad:
         return "result references unknown tables: " + ", ".join(sorted(set(bad)))
     return None
 
 
-def try_qualify(expression: exp.Expression, dialect: str, schema: Mapping[str, Any] | None) -> exp.Expression | None:
+def try_qualify(expression: exp.Expr, dialect: str, schema: Mapping[str, Any] | None) -> exp.Expr | None:
     """Resolve every column to its table (expanding ``*`` when a schema is known). ``None`` on failure."""
     try:
-        q = qualify(expression.copy(), dialect=dialect, schema=schema, quote_identifiers=False)
+        q = qualify(expression.copy(), dialect=dialect, schema=dict(schema) if schema is not None else None,
+                    quote_identifiers=False)
     except (SqlglotError, KeyError, AttributeError, TypeError, ValueError):
         return None
     # SQLGlot's scope based passes need star-free selections (else they cannot map columns).
@@ -229,7 +228,7 @@ def try_qualify(expression: exp.Expression, dialect: str, schema: Mapping[str, A
     return q
 
 
-def strip_qualification_noise(expression: exp.Expression) -> exp.Expression:
+def strip_qualification_noise(expression: exp.Expr) -> exp.Expr:
     """Undo purely cosmetic artefacts of :func:`qualify`.
 
     ``o.id AS id`` -> ``o.id``, ``orders AS orders`` -> ``orders`` and, in the
@@ -276,7 +275,7 @@ class Optimizer:
         self.max_passes = max_passes
         self.disabled = set(disabled)
 
-    def optimize(self, statements: Sequence[exp.Expression], dialect: str,
+    def optimize(self, statements: Sequence[exp.Expr], dialect: str,
                  schema: Mapping[str, Any] | None = None) -> OptimizationResult:
         original = _render(statements, dialect)
         result = OptimizationResult(dialect, original, original, [])
@@ -286,8 +285,8 @@ class Optimizer:
         result.optimized_sql = _render(result.statements, dialect) if result.changed else original
         return result
 
-    def _optimize_statement(self, stmt: exp.Expression, dialect: str, schema: Mapping[str, Any] | None,
-                            result: OptimizationResult) -> exp.Expression:
+    def _optimize_statement(self, stmt: exp.Expr, dialect: str, schema: Mapping[str, Any] | None,
+                            result: OptimizationResult) -> exp.Expr:
         ctx = RuleContext(dialect, schema, include_review=self.include_review)
         current = stmt.copy()
         rules = self._active_rules(result)
@@ -331,8 +330,8 @@ class Optimizer:
             strip_qualification_noise(current)
         return current
 
-    def _try_rule(self, rule: Rule, current: exp.Expression, ctx: RuleContext,
-                  result: OptimizationResult) -> tuple[exp.Expression | None, list[Rewrite]]:
+    def _try_rule(self, rule: Rule, current: exp.Expr, ctx: RuleContext,
+                  result: OptimizationResult) -> tuple[exp.Expr | None, list[Rewrite]]:
         """Run ``rule`` on a copy; return (new tree, rewrites) or (None, []) if nothing usable came out."""
         was_qualified = ctx.qualified
         try:
@@ -362,6 +361,9 @@ class Optimizer:
         for r in self.rules:
             if r.name in self.disabled:
                 result.skipped.setdefault(r.name, "disabled")
+            elif r.engines is not None and result.dialect not in r.engines:
+                result.skipped.setdefault(r.name, f"not applicable to {result.dialect} "
+                                                  f"(only {', '.join(sorted(r.engines))})")
             elif r.safety is Safety.REVIEW and not self.include_review:
                 result.skipped.setdefault(r.name, "needs review; review rules are switched off")
             else:
@@ -369,6 +371,6 @@ class Optimizer:
         return active
 
 
-def _render(statements: Sequence[exp.Expression], dialect: str) -> str:
+def _render(statements: Sequence[exp.Expr], dialect: str) -> str:
     pieces = [s.sql(dialect=dialect, pretty=True) for s in statements]
     return ";\n\n".join(pieces) + (";" if pieces else "")

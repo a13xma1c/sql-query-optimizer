@@ -25,6 +25,8 @@ class Category(StrEnum):
     PARTITION = "partition"
     PLAN = "plan"
     COMPLEXITY = "complexity"
+    ENGINE = "engine"  # rules specific to one engine family
+    SCHEMA = "schema"  # checks against the declared/imported schema (types, keys, statistics)
 
 
 @dataclass(frozen=True)

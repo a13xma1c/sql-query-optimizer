@@ -64,11 +64,17 @@ def parse_postgres(raw: str | list | dict) -> Plan:
     return Plan(Engine.POSTGRES, root, raw if isinstance(raw, str) else json.dumps(data), analyzed, stats)
 
 
+def _scaled(value: float | None, loops: float) -> float | None:
+    """Per-loop figure -> total over all loops (PostgreSQL reports per-loop averages)."""
+    return value * loops if value is not None else None
+
+
 def _node(d: dict, ids: IdCounter) -> PlanNode:
     nt = d.get("Node Type", "?")
     loops = d.get("Actual Loops")
     actual = d.get("Actual Rows")
     time_ms = d.get("Actual Total Time")
+    loop_count = to_float(loops) or 1.0
     node = PlanNode(
         id=ids.next(),
         op=nt,
@@ -78,9 +84,9 @@ def _node(d: dict, ids: IdCounter) -> PlanNode:
         join_type=(d.get("Join Type") or "").upper() or None,
         join_algo=_JOIN_ALGO.get(nt),
         est_rows=to_float(d.get("Plan Rows")),
-        actual_rows=(to_float(actual) * (to_float(loops) or 1)) if actual is not None else None,
+        actual_rows=_scaled(to_float(actual), loop_count),
         cost=to_float(d.get("Total Cost")),
-        time_ms=(to_float(time_ms) * (to_float(loops) or 1)) if time_ms is not None else None,
+        time_ms=_scaled(to_float(time_ms), loop_count),
         filter=d.get("Filter") or d.get("Join Filter"),
         condition=d.get("Hash Cond") or d.get("Merge Cond") or d.get("Index Cond") or d.get("Recheck Cond"),
     )

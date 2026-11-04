@@ -79,8 +79,15 @@ class Plan:
     engine: Engine
     root: PlanNode
     raw: str = ""
-    analyzed: bool = False
+    analyzed: bool = False  # measured (EXPLAIN ANALYZE) rather than estimated
     stats: dict[str, Any] = field(default_factory=dict)  # engine-global stats
+    logical: bool = False  # derived from the SQL text instead of the engine (no connection)
+
+    @property
+    def source(self) -> str:
+        if self.logical:
+            return "derived from the SQL (no database)"
+        return "EXPLAIN ANALYZE (measured)" if self.analyzed else "EXPLAIN (estimated by the engine)"
 
     def __post_init__(self) -> None:
         for i, node in enumerate(self.root.walk()):  # stable pre-order ids

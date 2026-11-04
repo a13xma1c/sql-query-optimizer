@@ -32,7 +32,7 @@ class AstTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._trees: list[AstNode] = []
-        self._items: dict[int, QTreeWidgetItem] = {}
+        self._items: dict[tuple[int, int], QTreeWidgetItem] = {}  # (statement index, node id) -> row
         self._dirty = False
 
         self.stats = QLabel("The syntax tree appears once the SQL parses.")
@@ -44,13 +44,13 @@ class AstTab(QWidget):
         self.graph_box.setToolTip("Render the tree with Graphviz (large trees are truncated)")
         self.graph_box.toggled.connect(self._render_graph)
         expand = QPushButton("Expand all")
-        expand.clicked.connect(lambda: self.tree.expandAll())
         collapse = QPushButton("Collapse")
         collapse.clicked.connect(self._collapse)
         export = QPushButton("Export JSON…")
         export.clicked.connect(self._export)
 
         self.tree = QTreeWidget()
+        expand.clicked.connect(self.tree.expandAll)
         self.tree.setHeaderLabels(HEADERS)
         self.tree.setUniformRowHeights(True)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -114,7 +114,7 @@ class AstTab(QWidget):
         item = QTreeWidgetItem([node.title, node.arg, node.sql])
         item.setData(0, Qt.ItemDataRole.UserRole, (stmt, node.id))
         item.setToolTip(2, node.sql)
-        self._items[(stmt, node.id)] = item  # type: ignore[index]
+        self._items[(stmt, node.id)] = item
         if parent is not None:
             parent.addChild(item)
         for child in node.children:

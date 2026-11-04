@@ -15,14 +15,14 @@ _STRICT_WRAPPERS = (exp.Cast, exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Lower, exp
                     exp.Length, exp.Date, exp.Year, exp.Month, exp.Day, exp.DateTrunc, exp.Extract, exp.Paren, exp.Neg)
 
 
-def is_literal_constant(node: exp.Expression) -> bool:
+def is_literal_constant(node: exp.Expr) -> bool:
     """Literal / boolean / NULL, optionally under CAST, DATE '...' or a unary minus."""
     while isinstance(node, (exp.Cast, exp.Paren, exp.Neg)):
         node = node.this
     return isinstance(node, (exp.Literal, exp.Boolean, exp.Null))
 
 
-def literal_string(node: exp.Expression) -> str | None:
+def literal_string(node: exp.Expr) -> str | None:
     """The string of a string literal (possibly wrapped in CAST/DATE), else None."""
     while isinstance(node, (exp.Cast, exp.Paren)):
         node = node.this
@@ -31,7 +31,7 @@ def literal_string(node: exp.Expression) -> str | None:
     return None
 
 
-def literal_int(node: exp.Expression) -> int | None:
+def literal_int(node: exp.Expr) -> int | None:
     while isinstance(node, (exp.Cast, exp.Paren)):
         node = node.this
     neg = False
@@ -56,11 +56,11 @@ def parse_date(text: str) -> dt.date | None:
     return None
 
 
-def date_literal(value: dt.date) -> exp.Expression:
+def date_literal(value: dt.date) -> exp.Expr:
     return exp.cast(exp.Literal.string(value.isoformat()), exp.DataType.Type.DATE)
 
 
-def set_where(select: exp.Select, predicates: Iterable[exp.Expression]) -> None:
+def set_where(select: exp.Select, predicates: Iterable[exp.Expr]) -> None:
     preds = [p for p in predicates if p is not None]
     if preds:
         select.set("where", exp.Where(this=exp.and_(*preds, copy=False)))
@@ -68,15 +68,15 @@ def set_where(select: exp.Select, predicates: Iterable[exp.Expression]) -> None:
         select.set("where", None)
 
 
-def where_conjuncts(select: exp.Select) -> list[exp.Expression]:
+def where_conjuncts(select: exp.Select) -> list[exp.Expr]:
     return conjuncts(select.args.get("where"))
 
 
-def column_tables(node: exp.Expression) -> set[str]:
+def column_tables(node: exp.Expr) -> set[str]:
     return {c.table for c in node.find_all(exp.Column) if c.table}
 
 
-def is_null_rejecting(pred: exp.Expression, alias: str) -> bool:
+def is_null_rejecting(pred: exp.Expr, alias: str) -> bool:
     """True if ``pred`` is false/unknown whenever every ``alias`` column is NULL.
 
     Conservative: the alias column must sit directly under a comparison (possibly
@@ -98,11 +98,11 @@ def is_null_rejecting(pred: exp.Expression, alias: str) -> bool:
     return False
 
 
-def _direct_column(node: exp.Expression, alias: str) -> bool:
+def _direct_column(node: exp.Expr, alias: str) -> bool:
     if isinstance(node, exp.Column):
         return node.table == alias
     if isinstance(node, _STRICT_WRAPPERS):
-        return any(_direct_column(c, alias) for c in node.iter_expressions() if isinstance(c, exp.Expression))
+        return any(_direct_column(c, alias) for c in node.iter_expressions() if isinstance(c, exp.Expr))
     return False
 
 
@@ -111,11 +111,11 @@ def resolve_table(column: exp.Column) -> exp.Table | None:
     select = column.find_ancestor(exp.Select)
     if select is None:
         return None
-    sources: dict[str, exp.Expression] = {}
+    sources: dict[str, exp.Expr] = {}
     from_ = select.args.get("from_") or select.args.get("from")
     items = ([from_.this] if from_ is not None else []) + [j.this for j in select.args.get("joins") or []]
     for item in items:
-        if isinstance(item, exp.Expression):
+        if isinstance(item, exp.Expr):
             sources[item.alias_or_name] = item
     if column.table:
         source = sources.get(column.table)
@@ -126,7 +126,7 @@ def resolve_table(column: exp.Column) -> exp.Table | None:
     return source if isinstance(source, exp.Table) else None
 
 
-def transform_predicates(root: exp.Expression, fn: Callable[[exp.Expression], exp.Expression | None]) -> list[tuple]:
+def transform_predicates(root: exp.Expr, fn: Callable[[exp.Expr], exp.Expr | None]) -> list[tuple]:
     """Apply ``fn`` to every predicate-like node (WHERE/ON/HAVING conjunct level and below).
 
     ``fn`` returns a replacement or ``None``. Returns ``[(old, new), ...]`` in document order.
@@ -145,8 +145,8 @@ def transform_predicates(root: exp.Expression, fn: Callable[[exp.Expression], ex
     return changes
 
 
-def _attached(node: exp.Expression, root: exp.Expression) -> bool:
-    n = node
+def _attached(node: exp.Expr, root: exp.Expr) -> bool:
+    n: exp.Expr | None = node
     while n is not None:
         if n is root:
             return True
@@ -154,7 +154,7 @@ def _attached(node: exp.Expression, root: exp.Expression) -> bool:
     return False
 
 
-def clause_diff(old: exp.Expression | None, new: exp.Expression | None, dialect: str | None = None) -> tuple[str, str]:
+def clause_diff(old: exp.Expr | None, new: exp.Expr | None, dialect: str | None = None) -> tuple[str, str]:
     """(before, after) SQL for a WHERE/HAVING/ON change, reduced to the conjuncts that differ."""
     from ..engine import canonical_sql
 

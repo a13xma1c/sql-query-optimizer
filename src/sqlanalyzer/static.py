@@ -27,12 +27,12 @@ MANY_JOINS = 6
 _RANGE_OR_EQ = (exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between, exp.In, exp.Like, exp.ILike)
 
 
-def _f(rule: str, sev: Severity, cat: Category, node: exp.Expression | None, msg: str, tip: str = "") -> Finding:
+def _f(rule: str, sev: Severity, cat: Category, node: exp.Expr | None, msg: str, tip: str = "") -> Finding:
     line, col = locate(node) if node is not None else (None, None)
     return Finding(rule, sev, cat, msg, tip, line, col)
 
 
-def analyze_static(statements: list[exp.Expression]) -> list[Finding]:
+def analyze_static(statements: list[exp.Expr]) -> list[Finding]:
     findings: list[Finding] = []
     for stmt in statements:
         findings += lint(stmt)
@@ -42,7 +42,7 @@ def analyze_static(statements: list[exp.Expression]) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- lint
-def lint(stmt: exp.Expression) -> list[Finding]:
+def lint(stmt: exp.Expr) -> list[Finding]:
     out: list[Finding] = []
     W, I = Severity.WARNING, Severity.INFO
 
@@ -68,9 +68,13 @@ def lint(stmt: exp.Expression) -> list[Finding]:
                           "Comparison with NULL using =/<> is never true.",
                           "Use IS NULL / IS NOT NULL."))
 
-    for node in stmt.find_all(exp.Not):
-        inner = node.this
-        if isinstance(inner, exp.In) and inner.args.get("query") is not None:
+    for node in stmt.find_all(exp.Not, exp.NEQ):
+        inner = node.this if isinstance(node, exp.Not) else node.expression
+        not_in = isinstance(node, exp.Not) and isinstance(inner, exp.In) and inner.args.get("query") is not None
+        # Snowflake's parser spells NOT IN (subquery) as x <> ALL (subquery)
+        neq_all = isinstance(node, exp.NEQ) and isinstance(inner, exp.All) and isinstance(
+            inner.this, (exp.Select, exp.Subquery))
+        if not_in or neq_all:
             out.append(_f("not-in-subquery", W, Category.LINT, node,
                           "NOT IN (subquery) returns no rows if the subquery yields a NULL and is often slow.",
                           "Use NOT EXISTS or an anti-join (LEFT JOIN ... IS NULL)."))
@@ -116,7 +120,7 @@ def lint(stmt: exp.Expression) -> list[Finding]:
 
 
 # -------------------------------------------------------------------------- joins
-def analyze_joins(stmt: exp.Expression) -> list[Finding]:
+def analyze_joins(stmt: exp.Expr) -> list[Finding]:
     out: list[Finding] = []
     W, I = Severity.WARNING, Severity.INFO
 
@@ -178,7 +182,7 @@ def analyze_joins(stmt: exp.Expression) -> list[Finding]:
     return out
 
 
-def _is_scalar_subquery(target: exp.Expression) -> bool:
+def _is_scalar_subquery(target: exp.Expr) -> bool:
     if not isinstance(target, exp.Subquery):
         return False
     inner = target.this
@@ -188,7 +192,7 @@ def _is_scalar_subquery(target: exp.Expression) -> bool:
         and getattr(inner.args["limit"].expression, "this", None) == "1")
 
 
-def _linked_by_where(where: list[exp.Expression], alias: str, tables: dict[str, exp.Table]) -> bool:
+def _linked_by_where(where: list[exp.Expr], alias: str, tables: dict[str, exp.Table]) -> bool:
     for c in where:
         if isinstance(c, exp.EQ):
             left, right = owners_in(c.this, tables), owners_in(c.expression, tables)
@@ -197,7 +201,7 @@ def _linked_by_where(where: list[exp.Expression], alias: str, tables: dict[str, 
     return False
 
 
-def _check_on_clause(join: exp.Join, on: exp.Expression, alias: str, tables: dict[str, exp.Table]) -> list[Finding]:
+def _check_on_clause(join: exp.Join, on: exp.Expr, alias: str, tables: dict[str, exp.Table]) -> list[Finding]:
     out: list[Finding] = []
     W = Severity.WARNING
     parts = conjuncts(on)
@@ -238,7 +242,7 @@ def _columns_differ(eq: exp.EQ) -> bool:
 
 
 # -------------------------------------------------------------------------- scans
-def analyze_scans(stmt: exp.Expression) -> list[Finding]:
+def analyze_scans(stmt: exp.Expr) -> list[Finding]:
     out: list[Finding] = []
     W, I = Severity.WARNING, Severity.INFO
     occurrences: Counter[str] = Counter()
@@ -272,7 +276,7 @@ def analyze_scans(stmt: exp.Expression) -> list[Finding]:
             first_node.setdefault(qualified, table)
 
         if (tables and sel.args.get("where") is None and sel.args.get("limit") is None
-                and not scope.is_correlated_subquery and not _only_counted(sel)):
+                and not scope.is_correlated_subquery and isinstance(sel, exp.Select) and not _only_counted(sel)):
             names = ", ".join(sorted({table_names(t)[1] for t in tables.values()}))
             out.append(_f("unfiltered-scan", I, Category.SCAN, next(iter(tables.values())),
                           f"No WHERE clause: {names} will be read in full.",

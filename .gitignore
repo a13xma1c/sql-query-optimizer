@@ -261,3 +261,6 @@ $RECYCLE.BIN/
 .Trash-*
 .nfs*
 .fuse_hidden*
+
+# Packaging (the PyInstaller spec is deliberately tracked, despite *.spec above)
+!packaging/*.spec

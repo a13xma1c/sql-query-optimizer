@@ -131,17 +131,19 @@ class CompareTab(QWidget):
         cfg = self.session.connection
         analyze = self.analyze_box.isChecked()
         fetch = [cfg is not None and not t for t in texts]
-        if not any(fetch):
+        if cfg is None or not any(fetch):
             self._finish(sqls, texts)
             return
+        connection = cfg
 
         self.run_btn.setEnabled(False)
         self.status.setText("Running EXPLAIN…")
 
         def work() -> tuple[str, str]:
-            return tuple(  # type: ignore[return-value]
-                fetch_plan_text(cfg, sql, analyze) if need else text
-                for sql, text, need in zip(sqls, texts, fetch, strict=True))
+            old_sql, new_sql = sqls
+            old_text, new_text = texts
+            return (fetch_plan_text(connection, old_sql, analyze) if fetch[0] else old_text,
+                    fetch_plan_text(connection, new_sql, analyze) if fetch[1] else new_text)
 
         def done(result: tuple[str, str]) -> None:
             self.run_btn.setEnabled(True)
@@ -156,24 +158,35 @@ class CompareTab(QWidget):
 
     def _finish(self, sqls: tuple[str, str], plan_texts: tuple[str, str]) -> None:
         engine, hints = self.session.engine, self.session.hints
-        old = analyze_query(sqls[0], engine, hints, plan_texts[0] or None, optimize=False)
-        new = analyze_query(sqls[1], engine, hints, plan_texts[1] or None, optimize=False)
+        stats, schema = self.session.stats, self.session.schema
+        old = analyze_query(sqls[0], engine, hints, plan_texts[0] or None, schema=schema, stats=stats, optimize=False)
+        new = analyze_query(sqls[1], engine, hints, plan_texts[1] or None, schema=schema, stats=stats, optimize=False)
         cmp = compare_queries(old, new)
         self._render(cmp)
         if not self.status.text().startswith("EXPLAIN failed"):
-            self.status.setText("Plans compared." if cmp.plan_diff else "Static comparison only (no plans available).")
+            if cmp.plan_diff is None:
+                self.status.setText("Static comparison only (no plans available).")
+            else:
+                self.status.setText("Offline plans compared (derived from the SQL)." if cmp.offline_plans
+                                    else "Plans compared.")
 
     def _render(self, cmp: Comparison) -> None:
         lines: list[str] = []
-        if cmp.complexity_delta is not None:
-            o, n = cmp.old.complexity, cmp.new.complexity
+        o, n = cmp.old.complexity, cmp.new.complexity
+        if cmp.complexity_delta is not None and o is not None and n is not None:
             lines.append(f"Complexity: {o.score} ({o.level}) → {n.score} ({n.level}) [{cmp.complexity_delta:+d}]")
         lines.append(f"Findings: {len(cmp.old.findings)} → {len(cmp.new.findings)} "
                      f"({len(cmp.resolved)} resolved, {len(cmp.introduced)} introduced)")
+        if cmp.cost_change:
+            lines.append(f"Offline cost model: {cmp.cost_change}")
         if cmp.plan_diff:
+            if cmp.offline_plans:
+                lines.append("Operator diff of the plans derived from the SQL (no database was contacted); "
+                             "connect or use “Set plan…” for measured plans.")
             lines += cmp.plan_diff.summary
-        elif cmp.old.plan is None or cmp.new.plan is None:
-            lines.append("No execution plans: connect to a database or use “Set plan…” to compare plans.")
+        elif cmp.old.effective_plan is None or cmp.new.effective_plan is None:
+            lines.append("No execution plans: fix the syntax errors, connect to a database, "
+                         "or use “Set plan…”.")
         self.summary.setHtml("<ul>" + "".join(f"<li>{_esc(x)}</li>" for x in lines) + "</ul>")
 
         self.diff_tree.clear()
@@ -190,8 +203,8 @@ class CompareTab(QWidget):
             self.diff_tree.expandAll()
             old_view_status, new_view_status = cmp.plan_diff.old_ids, cmp.plan_diff.new_ids
 
-        show_plan_graph(self.old_view, cmp.old.plan, status=old_view_status)
-        show_plan_graph(self.new_view, cmp.new.plan, status=new_view_status)
+        show_plan_graph(self.old_view, cmp.old.effective_plan, status=old_view_status)
+        show_plan_graph(self.new_view, cmp.new.effective_plan, status=new_view_status)
 
         def block(title: str, color: str, fs) -> str:
             if not fs:

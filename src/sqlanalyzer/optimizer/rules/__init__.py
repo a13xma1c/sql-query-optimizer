@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from ..engine import Rule
+from .engine_specific import (
+    ENGINE_SPECIFIC_RULES,
+    ApproxCountDistinctRule,
+    CaseInsensitiveLikeRule,
+    InListToAnyRule,
+)
 from .grouping import HavingToWhereRule, RedundantDistinctRule, UnionAllRule
 from .joins import ExplicitJoinRule, LeftJoinToInnerRule, RedundantJoinConditionRule
 from .naming import QualifyRule
@@ -54,6 +60,8 @@ RULE_CLASSES: list[type[Rule]] = [
     SubqueryOrderByRule,
     NotInToNotExistsRule,
     UnionAllRule,
+    # engine-specific rewrites (skipped on other engines)
+    *ENGINE_SPECIFIC_RULES,
     # SQLGlot scope-aware passes (need qualified columns)
     *SQLGLOT_PASS_RULES,
 ]
@@ -97,6 +105,10 @@ __all__ = [
     "SubqueryOrderByRule",
     "NotInToNotExistsRule",
     "UnionAllRule",
+    "ApproxCountDistinctRule",
+    "CaseInsensitiveLikeRule",
+    "InListToAnyRule",
+    "ENGINE_SPECIFIC_RULES",
     "PushdownPredicatesRule",
     "PushdownProjectionsRule",
     "MergeSubqueriesRule",
