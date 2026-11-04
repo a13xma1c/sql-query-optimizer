@@ -220,8 +220,9 @@ vocabulary (see the feature table). The history (`history.py`) is a JSON file ne
 
 `plans/graph.py` gives every Graphviz node/edge an explicit `id=` (`n<node id>`, `e<child id>_<parent id>`),
 so the rendered SVG's `<g id="...">` elements can be matched back to plan node ids. `gui/svg_view.py` resolves a
-click to the smallest element under the pointer (`QSvgRenderer.boundsOnElement`/`transformForElement`, mapped
-through the `QGraphicsSvgItem`; but the hit *rectangles* themselves are parsed from the SVG source's node shapes, `element_rects`, because `boundsOnElement` includes the label text and therefore varies with the platform's fonts - on Windows it reported boxes twice as wide as drawn) and tells press-from-pan apart by how far the mouse moved between press and
+click to the smallest element under the pointer using boxes parsed from the SVG's own shape coordinates
+(`element_bounds`; `QSvgRenderer.boundsOnElement` was tried first and answered differently on Windows, because
+it folds in platform text metrics) and tells press-from-pan apart by how far the mouse moved between press and
 release, so panning (`ScrollHandDrag`) still works. The Plan tab wires this to the operator tree in both
 directions, and double-click toggles `PlanTab._collapsed`, which `build_graph(..., collapsed=...)` renders as a
 single dashed placeholder box instead of descending into the subtree. `heat_map(plan)` turns self-time (or, for
@@ -364,7 +365,7 @@ behind the connection depends on what is available:
 | Engine | How it runs |
 | --- | --- |
 | DuckDB | always live, in-process, on a temporary file with 200k sample orders |
-| PostgreSQL | live against `SQLANALYZER_E2E_POSTGRES_URL` if set; otherwise a throw-away cluster is started with the local `initdb`/`pg_ctl` (skipped when they are missing or refuse to run - `initdb` will not start as root, nor with Administrator privileges on Windows, which is how GitHub's Windows runners execute) |
+| PostgreSQL | live against `SQLANALYZER_E2E_POSTGRES_URL` if set; otherwise a throw-away cluster is started with the local `initdb`/`pg_ctl` (skipped when neither exists) |
 | Trino | live against `SQLANALYZER_E2E_TRINO_URL` (`trino://user@host:8080/catalog/schema`, tables `customers`, `orders`, `refunds` must exist); otherwise a **recorded server**: the app still builds the SQLAlchemy URL, issues `EXPLAIN (TYPE DISTRIBUTED)` and parses rows in the driver's shape, but the rows come from `tests/data/trino_plan.txt` |
 | Snowflake | same with `SQLANALYZER_E2E_SNOWFLAKE_URL` (`snowflake://user:pw@account/DB/SCHEMA?warehouse=WH`) and `tests/data/snowflake_plan.json` |
 

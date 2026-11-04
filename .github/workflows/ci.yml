@@ -95,10 +95,9 @@ jobs:
       - name: System packages (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          choco install graphviz --no-progress -y
-          $pg = Get-ChildItem "C:\Program Files\PostgreSQL\*\bin" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
-          if ($pg) { Add-Content $env:GITHUB_PATH $pg.FullName; Write-Host "PostgreSQL binaries: $($pg.FullName)" }
+        # No PostgreSQL here on purpose: initdb refuses to run under an administrative account, which is
+        # what the hosted runners use, so the PostgreSQL-backed tests skip on Windows (see tests/conftest.py).
+        run: choco install graphviz --no-progress -y
 
       - run: uv sync --group dev
       - name: Unit and component tests

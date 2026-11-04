@@ -195,3 +195,61 @@ def test_render_png_and_pdf():
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     pdf = render_pdf(plan)
     assert pdf[:4] == b"%PDF"
+
+
+_SVG = b"""<?xml version="1.0"?>
+<svg width="100pt" height="100pt" viewBox="0.00 0.00 100.00 100.00" xmlns="http://www.w3.org/2000/svg">
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 96)">
+<g id="n0" class="node"><title>n0</title>
+<path d="M50,-90C50,-90 10,-90 10,-90 4,-90 0,-86 0,-80 0,-80 0,-60 0,-60 0,-54 4,-50 10,-50 50,-50 56,-50 60,-54 60,-60 60,-80 60,-86 56,-90 50,-90"/>
+<text x="5" y="-70">label</text></g>
+<g id="n1" class="node"><title>n1</title><polygon points="20,-10 80,-10 80,-40 20,-40 20,-10"/></g>
+<g id="n2" class="node"><title>n2</title><ellipse cx="50" cy="-25" rx="10" ry="5"/></g>
+<g id="e1_0" class="edge"><title>n1-&gt;n0</title><path d="M30,-40C30,-45 30,-47 30,-50"/></g>
+<g id="a_x"><text x="1" y="1">not a node group</text></g>
+</g>
+</svg>"""
+
+
+def test_element_bounds_reads_node_geometry_with_the_root_transform():
+    from sqlanalyzer.plans.graph import element_bounds
+
+    boxes = element_bounds(_SVG)
+    assert set(boxes) == {"n0", "n1", "n2", "e1_0"}  # edges too; untyped groups and text are ignored
+    # polygon: x 20..80 -> +4 translate; y -40..-10 -> +96 translate
+    assert boxes["n1"] == pytest.approx((24.0, 56.0, 60.0, 30.0))
+    # rounded path: min/max over every coordinate in the path
+    assert boxes["n0"] == pytest.approx((4.0, 6.0, 60.0, 40.0))
+    # ellipse: centre +- radii
+    assert boxes["n2"] == pytest.approx((44.0, 66.0, 20.0, 10.0))
+
+
+def test_element_bounds_honours_scale_and_viewbox_origin():
+    from sqlanalyzer.plans.graph import element_bounds
+
+    svg = _SVG.replace(b'viewBox="0.00 0.00 100.00 100.00"', b'viewBox="10 20 100 100"') \
+              .replace(b"scale(1 1)", b"scale(2 0.5)")
+    boxes = element_bounds(svg)
+    x, y, w, h = boxes["n1"]
+    assert (x, w) == pytest.approx(((20 + 4) * 2 - 10, 60 * 2))
+    assert (y, h) == pytest.approx(((-40 + 96) * 0.5 - 20, 30 * 0.5))
+
+
+def test_element_bounds_is_empty_for_garbage():
+    from sqlanalyzer.plans.graph import element_bounds
+
+    assert element_bounds(b"not xml") == {}
+    assert element_bounds(b"<svg xmlns='http://www.w3.org/2000/svg'/>") == {}
+
+
+@needs_dot
+def test_element_bounds_match_every_rendered_node():
+    from sqlanalyzer.plans.graph import element_bounds
+
+    plan = parse_plan(Engine.POSTGRES, read("postgres_plan.json"))
+    boxes = element_bounds(render_svg(plan))
+    assert {f"n{n.id}" for n in plan.nodes()} <= set(boxes)
+    rects = [boxes[f"n{n.id}"] for n in plan.nodes()]
+    for i, (x, y, w, h) in enumerate(rects):  # graphviz never overlaps nodes
+        for x2, y2, w2, h2 in rects[i + 1:]:
+            assert x + w <= x2 or x2 + w2 <= x or y + h <= y2 or y2 + h2 <= y

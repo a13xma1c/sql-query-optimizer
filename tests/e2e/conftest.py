@@ -84,8 +84,8 @@ def _free_port() -> int:
 
 
 class PostgresUnavailable(RuntimeError):
-    """The local binaries exist but a cluster cannot be started here (e.g. ``initdb`` refuses to run
-    with Administrator privileges on Windows, or as root on Linux); callers skip instead of failing."""
+    """``initdb``/``pg_ctl`` exist but cannot start a cluster here (e.g. Windows refuses to run ``initdb``
+    under an account with administrative rights, which is what GitHub's runners use)."""
 
 
 class TemporaryPostgres:
@@ -105,10 +105,7 @@ class TemporaryPostgres:
     def start(self) -> None:
         self._run("initdb", ["initdb", "-D", str(self.data), "-U", "postgres", "--auth=trust", "-E", "UTF8",
                              "--no-sync"])
-        # unix_socket_directories (-k) is a Unix-only setting; Windows clusters only listen on TCP
-        socket_dir = "" if os.name == "nt" else f" -k {self.root}"
-        options = (f"-p {self.port}{socket_dir} -c listen_addresses=127.0.0.1 -c fsync=off "
-                   "-c synchronous_commit=off")
+        options = f"-p {self.port} -k {self.root} -c listen_addresses=127.0.0.1 -c fsync=off -c synchronous_commit=off"
         self._run("pg_ctl start", ["pg_ctl", "-D", str(self.data), "-o", options, "-l", str(self.root / "pg.log"),
                                    "-w", "start"])
         deadline = time.time() + 30
@@ -121,17 +118,15 @@ class TemporaryPostgres:
                     raise RuntimeError("PostgreSQL did not come up") from None
                 time.sleep(0.2)
 
+    @staticmethod
+    def _run(label: str, command: list[str]) -> None:
+        result = subprocess.run(command, capture_output=True, text=True, errors="replace")
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            raise PostgresUnavailable(f"{label} failed (exit {result.returncode}): " + (detail[-1] if detail else "?"))
+
     def stop(self) -> None:
         subprocess.run(["pg_ctl", "-D", str(self.data), "-m", "immediate", "-w", "stop"], capture_output=True)
-
-    @staticmethod
-    def _run(label: str, cmd: list[str]) -> None:
-        try:
-            subprocess.run(cmd, check=True, capture_output=True)
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.stderr or exc.stdout or b"").decode(errors="replace").strip().splitlines()
-            raise PostgresUnavailable(f"{label} failed (exit {exc.returncode}): "
-                                      + (detail[-1] if detail else "no output")) from exc
 
 
 @pytest.fixture(scope="session")
@@ -152,7 +147,8 @@ def pg_server(tmp_path_factory) -> Iterator[ConnectionConfig | None]:
         try:
             server.start()
         except PostgresUnavailable as exc:
-            warnings.warn(f"PostgreSQL e2e tests skipped: {exc}", stacklevel=1)
+            warnings.warn(f"PostgreSQL binaries found but unusable, e2e tests run without a server: {exc}",
+                          stacklevel=1)
             yield None
             return
         load_postgres(server.cfg)

@@ -81,7 +81,7 @@ def pg_server_or_skip(tmp_path_factory):
         try:
             server.start()
         except PostgresUnavailable as exc:
-            pytest.skip(f"no PostgreSQL: {exc}")
+            pytest.skip(f"PostgreSQL binaries found but unusable: {exc}")
         yield server.cfg
     finally:
         server.stop()

@@ -10,7 +10,9 @@ colour (accessibility: colour is never the only carrier of meaning here).
 from __future__ import annotations
 
 import math
+import re
 import shutil
+import xml.etree.ElementTree as ET
 
 import graphviz
 
@@ -177,6 +179,73 @@ def render_pdf(plan: Plan, severities: dict[int, str] | None = None, status: dic
         raise GraphvizMissing("The Graphviz 'dot' executable was not found. Install Graphviz "
                               "(e.g. 'brew install graphviz' or 'apt install graphviz') to visualize plans.")
     return build_graph(plan, severities, status, heat=heat, collapsed=collapsed).pipe(format="pdf")
+
+
+_SVG_NS = "{http://www.w3.org/2000/svg}"
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+_TRANSFORM = re.compile(r"(scale|translate|rotate)\(([^)]*)\)")
+
+Bounds = tuple[float, float, float, float]  # x, y, width, height in the SVG's user (viewBox) units
+
+
+def element_bounds(svg: bytes) -> dict[str, Bounds]:
+    """Bounding box of every ``<g id="...">`` group of the Graphviz SVG, keyed by id.
+
+    Read straight from the shape coordinates (``path``/``polygon``/``ellipse``) rather than asked of
+    ``QSvgRenderer.boundsOnElement``, whose answer depends on the platform's text metrics (the same
+    graph hit-tested differently on Windows than on Linux). Only Graphviz's own root transform
+    (``scale(sx sy) rotate(0) translate(tx ty)``) is applied, which is all its output ever uses; a
+    ``viewBox`` origin other than 0,0 is subtracted so the result is in the item's coordinate space.
+    """
+    try:
+        root = ET.fromstring(svg)
+    except ET.ParseError:
+        return {}
+    vb = [float(v) for v in (root.get("viewBox") or "0 0 0 0").split()[:2]]
+    out: dict[str, Bounds] = {}
+    for graph in root.iter(_SVG_NS + "g"):
+        if graph.get("class") != "graph":
+            continue
+        sx, sy, tx, ty = _root_transform(graph.get("transform", ""))
+        for group in graph.iter(_SVG_NS + "g"):
+            gid = group.get("id")
+            if not gid or group.get("class") not in ("node", "edge", "cluster"):
+                continue
+            xs: list[float] = []
+            ys: list[float] = []
+            for shape in group.iter():
+                tag = shape.tag.removeprefix(_SVG_NS)
+                if tag == "polygon":
+                    pairs = [float(v) for v in _NUMBER.findall(shape.get("points", ""))]
+                    xs += pairs[0::2]
+                    ys += pairs[1::2]
+                elif tag == "path":
+                    pairs = [float(v) for v in _NUMBER.findall(shape.get("d", ""))]
+                    xs += pairs[0::2]
+                    ys += pairs[1::2]
+                elif tag == "ellipse":
+                    cx, cy = float(shape.get("cx", 0)), float(shape.get("cy", 0))
+                    rx, ry = float(shape.get("rx", 0)), float(shape.get("ry", 0))
+                    xs += [cx - rx, cx + rx]
+                    ys += [cy - ry, cy + ry]
+            if not xs or not ys:
+                continue
+            x0, x1 = (min(xs) + tx) * sx - vb[0], (max(xs) + tx) * sx - vb[0]
+            y0, y1 = (min(ys) + ty) * sy - vb[1], (max(ys) + ty) * sy - vb[1]
+            out[gid] = (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+    return out
+
+
+def _root_transform(transform: str) -> tuple[float, float, float, float]:
+    sx = sy = 1.0
+    tx = ty = 0.0
+    for name, args in _TRANSFORM.findall(transform):
+        values = [float(v) for v in _NUMBER.findall(args)]
+        if name == "scale" and values:
+            sx, sy = values[0], values[1] if len(values) > 1 else values[0]
+        elif name == "translate" and values:
+            tx, ty = values[0], values[1] if len(values) > 1 else 0.0
+    return sx, sy, tx, ty
 
 
 def heat_map(plan: Plan) -> dict[int, float]:
