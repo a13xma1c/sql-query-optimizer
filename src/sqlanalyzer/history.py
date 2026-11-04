@@ -50,6 +50,7 @@ class HistoryEntry:
     rewrites: int = 0
     plan_source: str = ""  # "" | "explain" | "analyze" | "pasted"
     tags: list[str] = field(default_factory=list)
+    seq: int = 0  # order of the last record(); breaks ties between equal timestamps (Windows: ~15 ms clock)
 
     @property
     def title(self) -> str:
@@ -70,6 +71,7 @@ class QueryHistory:
         self.path = Path(path) if path is not None else default_path()
         self.limit = limit
         self._entries: dict[str, HistoryEntry] = {}
+        self._seq = 0
         self.load()
 
     # ------------------------------------------------------------------ access
@@ -79,7 +81,7 @@ class QueryHistory:
         items = [e for e in self._entries.values()
                  if (engine is None or e.engine == engine)
                  and (not needle or needle in e.sql.lower() or needle in " ".join(e.tags).lower())]
-        return sorted(items, key=lambda e: e.last_seen, reverse=True)
+        return sorted(items, key=lambda e: (e.last_seen, e.seq), reverse=True)
 
     def get(self, entry_id: str) -> HistoryEntry | None:
         return self._entries.get(entry_id)
@@ -96,13 +98,15 @@ class QueryHistory:
             return None
         now = datetime.now(UTC).isoformat(timespec="microseconds")
         key = fingerprint(sql, engine)
+        self._seq += 1
         entry = self._entries.get(key)
         if entry is None:
-            entry = HistoryEntry(key, engine, sql, now, now)
+            entry = HistoryEntry(key, engine, sql, now, now, seq=self._seq)
             self._entries[key] = entry
         else:
             entry.runs += 1
             entry.last_seen = now
+            entry.seq = self._seq
             entry.sql = sql  # keep the latest formatting
         entry.source = source
         entry.findings, entry.errors, entry.warnings = findings, errors, warnings
@@ -152,6 +156,7 @@ class QueryHistory:
                 continue
             if entry.id:
                 self._entries[entry.id] = entry
+        self._seq = max((e.seq for e in self._entries.values()), default=0)
 
     def save(self) -> None:
         try:

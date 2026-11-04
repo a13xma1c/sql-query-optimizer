@@ -66,3 +66,27 @@ def test_export_and_default_path(tmp_path, monkeypatch):
     assert default_path() == tmp_path / "custom.json"
     monkeypatch.delenv(ENV_VAR)
     assert default_path().name == "history.json"
+
+
+def test_entries_recorded_within_the_same_clock_tick_stay_newest_first(tmp_path, monkeypatch):
+    """Windows' clock advances in ~15 ms steps, so consecutive records can share a timestamp."""
+    import sqlanalyzer.history as history_module
+
+    class _FrozenDatetime(history_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2024, 1, 1, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(history_module, "datetime", _FrozenDatetime)
+    h = QueryHistory(tmp_path / "h.json")
+    for n in range(1, 4):
+        h.record(f"SELECT {n}", "duckdb")
+    assert len({e.last_seen for e in h.entries()}) == 1  # all three share one timestamp
+    assert [e.title for e in h.entries()] == ["SELECT 3", "SELECT 2", "SELECT 1"]
+    h.record("SELECT 1", "duckdb")  # re-running moves an entry back to the top
+    assert [e.title for e in h.entries()] == ["SELECT 1", "SELECT 3", "SELECT 2"]
+    # the order survives a reload, and new records keep counting from where the file left off
+    reloaded = QueryHistory(tmp_path / "h.json")
+    assert [e.title for e in reloaded.entries()] == ["SELECT 1", "SELECT 3", "SELECT 2"]
+    reloaded.record("SELECT 4", "duckdb")
+    assert [e.title for e in reloaded.entries()][:2] == ["SELECT 4", "SELECT 1"]
