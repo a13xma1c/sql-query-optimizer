@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import time
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +83,11 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+class PostgresUnavailable(RuntimeError):
+    """The local binaries exist but a cluster cannot be started here (e.g. ``initdb`` refuses to run
+    with Administrator privileges on Windows, or as root on Linux); callers skip instead of failing."""
+
+
 class TemporaryPostgres:
     """A throw-away cluster in a temp dir, started with the local binaries."""
 
@@ -97,11 +103,14 @@ class TemporaryPostgres:
         return shutil.which("initdb") is not None and shutil.which("pg_ctl") is not None
 
     def start(self) -> None:
-        subprocess.run(["initdb", "-D", str(self.data), "-U", "postgres", "--auth=trust", "-E", "UTF8",
-                        "--no-sync"], check=True, capture_output=True)
-        options = f"-p {self.port} -k {self.root} -c listen_addresses=127.0.0.1 -c fsync=off -c synchronous_commit=off"
-        subprocess.run(["pg_ctl", "-D", str(self.data), "-o", options, "-l", str(self.root / "pg.log"), "-w",
-                        "start"], check=True, capture_output=True)
+        self._run("initdb", ["initdb", "-D", str(self.data), "-U", "postgres", "--auth=trust", "-E", "UTF8",
+                             "--no-sync"])
+        # unix_socket_directories (-k) is a Unix-only setting; Windows clusters only listen on TCP
+        socket_dir = "" if os.name == "nt" else f" -k {self.root}"
+        options = (f"-p {self.port}{socket_dir} -c listen_addresses=127.0.0.1 -c fsync=off "
+                   "-c synchronous_commit=off")
+        self._run("pg_ctl start", ["pg_ctl", "-D", str(self.data), "-o", options, "-l", str(self.root / "pg.log"),
+                                   "-w", "start"])
         deadline = time.time() + 30
         while True:
             try:
@@ -114,6 +123,15 @@ class TemporaryPostgres:
 
     def stop(self) -> None:
         subprocess.run(["pg_ctl", "-D", str(self.data), "-m", "immediate", "-w", "stop"], capture_output=True)
+
+    @staticmethod
+    def _run(label: str, cmd: list[str]) -> None:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or b"").decode(errors="replace").strip().splitlines()
+            raise PostgresUnavailable(f"{label} failed (exit {exc.returncode}): "
+                                      + (detail[-1] if detail else "no output")) from exc
 
 
 @pytest.fixture(scope="session")
@@ -131,7 +149,12 @@ def pg_server(tmp_path_factory) -> Iterator[ConnectionConfig | None]:
         return
     server = TemporaryPostgres(tmp_path_factory.mktemp("pg"))
     try:
-        server.start()
+        try:
+            server.start()
+        except PostgresUnavailable as exc:
+            warnings.warn(f"PostgreSQL e2e tests skipped: {exc}", stacklevel=1)
+            yield None
+            return
         load_postgres(server.cfg)
         yield server.cfg
     finally:

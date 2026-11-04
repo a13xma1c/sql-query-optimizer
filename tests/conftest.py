@@ -66,7 +66,7 @@ def pg_server_or_skip(tmp_path_factory):
     """A private throw-away PostgreSQL (unit tests that need a live server); skipped when unavailable."""
     import os
 
-    from e2e.conftest import ENV_URLS, TemporaryPostgres
+    from e2e.conftest import ENV_URLS, PostgresUnavailable, TemporaryPostgres
     from sqlanalyzer.db import ConnectionConfig
     from sqlanalyzer.dialects import Engine
 
@@ -78,7 +78,10 @@ def pg_server_or_skip(tmp_path_factory):
         pytest.skip("no PostgreSQL available")
     server = TemporaryPostgres(tmp_path_factory.mktemp("pg-unit"))
     try:
-        server.start()
+        try:
+            server.start()
+        except PostgresUnavailable as exc:
+            pytest.skip(f"no PostgreSQL: {exc}")
         yield server.cfg
     finally:
         server.stop()

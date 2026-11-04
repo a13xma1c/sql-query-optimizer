@@ -447,12 +447,46 @@ def test_svg_view_hit_testing_resolves_clicks_to_registered_elements():
     view = SvgView()
     view.resize(800, 600)
     view.load_svg(svg, {f"n{n.id}": n.id for n in plan.nodes()})
-    node = plan.nodes()[1]
-    rect = view._renderer.transformForElement(f"n{node.id}").mapRect(view._renderer.boundsOnElement(f"n{node.id}"))
-    scene_center = view._item.mapToScene(rect.center())
-    assert view._hit_test(scene_center) == node.id
+    rects = {n.id: view.element_rect(f"n{n.id}") for n in plan.nodes()}
+    assert all(r is not None and not r.isEmpty() for r in rects.values())
+    # the node boxes Graphviz lays out never overlap, so every centre resolves to its own node -
+    # on every platform, since the rects come from the SVG source rather than from font metrics
+    for node_id, rect in rects.items():
+        assert view._hit_test(view._item.mapToScene(rect.center())) == node_id
+        for other_id, other in rects.items():
+            assert other_id == node_id or not rect.intersects(other)
     # far outside every node's bounds
     assert view._hit_test(QPointF(-9999, -9999)) is None
+    # the rects are plausible against Qt's own idea of the element bounds (which include the text)
+    node = plan.nodes()[1]
+    qt_rect = view._renderer.transformForElement(f"n{node.id}").mapRect(view._renderer.boundsOnElement(f"n{node.id}"))
+    assert qt_rect.intersects(rects[node.id])
+
+
+def test_element_rects_parses_graphviz_shapes_and_transforms():
+    from sqlanalyzer.gui.svg_view import element_rects
+
+    svg = """<?xml version="1.0"?>
+    <svg xmlns="http://www.w3.org/2000/svg" width="100pt" height="50pt" viewBox="0 0 100 50">
+    <g id="graph0" class="graph" transform="scale(2 2) rotate(0) translate(4 20)">
+      <polygon fill="white" points="-4,4 -4,-20 96,-20 96,4"/>
+      <g id="n0" class="node"><title>n0</title>
+        <g id="a_n0"><a xlink:title="t" xmlns:xlink="http://www.w3.org/1999/xlink">
+          <path d="M10,-10C10,-10 0,-10 0,-10 0,0 10,0 10,0"/>
+          <text x="2" y="-4">a very long label that would widen any text-based bounds</text>
+        </a></g>
+      </g>
+      <g id="n1" class="node"><polygon points="20,-10 30,-10 30,0 20,0"/></g>
+      <g id="n2" class="node"><ellipse cx="50" cy="-5" rx="4" ry="2"/></g>
+      <g id="e0_1" class="edge"><path d="M0,0 100,100"/></g>
+    </g></svg>"""
+    rects = element_rects(svg)
+    # (x + tx) * sx, (y + ty) * sy, w * sx, h * sy
+    assert rects["n0"] == (8.0, 20.0, 20.0, 20.0)
+    assert rects["n1"] == (48.0, 20.0, 20.0, 20.0)
+    assert rects["n2"] == (100.0, 26.0, 16.0, 8.0)
+    assert "e0_1" not in rects and "graph0" not in rects
+    assert element_rects(b"not xml at all") == {}
 
 
 def test_svg_view_distinguishes_click_from_drag(qtbot):
